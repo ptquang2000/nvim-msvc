@@ -1,0 +1,12 @@
+:Msvc	msvc.txt	/*:Msvc*
+msvc-api	msvc.txt	/*msvc-api*
+msvc-architecture	msvc.txt	/*msvc-architecture*
+msvc-commands	msvc.txt	/*msvc-commands*
+msvc-configuration	msvc.txt	/*msvc-configuration*
+msvc-events	msvc.txt	/*msvc-events*
+msvc-introduction	msvc.txt	/*msvc-introduction*
+msvc-requirements	msvc.txt	/*msvc-requirements*
+msvc-setup	msvc.txt	/*msvc-setup*
+msvc-troubleshooting	msvc.txt	/*msvc-troubleshooting*
+msvc.txt	msvc.txt	/*msvc.txt*
+not	msvc.txt	/*not*

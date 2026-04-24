@@ -1,0 +1,8 @@
+*.log
+.DS_Store
+/tmp/
+/.luarc.json
+/.luacheckrc
+/node_modules/
+.nvim.lua
+/tests/.deps/
