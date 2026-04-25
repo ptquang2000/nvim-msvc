@@ -236,44 +236,49 @@ local function check_extractor_prereqs(install)
         return
     end
 
-    local candidates = {
-        install .. "\\MSBuild\\Current\\Bin\\amd64\\MSBuild.dll",
-        install .. "\\MSBuild\\Current\\Bin\\MSBuild.dll",
-        install .. "\\MSBuild\\Current\\Bin\\x86\\MSBuild.dll",
+    local bin_dirs = {
+        install .. "\\MSBuild\\Current\\Bin\\amd64",
+        install .. "\\MSBuild\\Current\\Bin",
+        install .. "\\MSBuild\\Current\\Bin\\x86",
+        install .. "\\MSBuild\\Current\\Bin\\arm64",
     }
     local found
-    for _, p in ipairs(candidates) do
-        local norm = Util.normalize_path(p)
-        if Util.is_file(norm) then
-            found = norm
+    for _, dir in ipairs(bin_dirs) do
+        local exe = Util.normalize_path(dir .. "\\MSBuild.exe")
+        local dll = Util.normalize_path(dir .. "\\Microsoft.Build.dll")
+        if Util.is_file(exe) and Util.is_file(dll) then
+            found = exe
             break
         end
     end
     if found then
-        ok("extractor MSBuild.dll: " .. found)
+        ok("extractor MSBuild (VS-bundled): " .. found)
         return
     end
 
-    -- Fallback: a .NET SDK lets MSBuildLocator discover MSBuild on its own.
+    -- Fallback: a .NET 10+ SDK lets MSBuildLocator discover MSBuild on its own.
     local sdks = {}
+    local older_sdks = {}
     local sys_ok, res = pcall(function()
-        return vim.system(
-            { "dotnet", "--list-sdks" },
-            { text = true }
-        ):wait()
+        return vim.system({ "dotnet", "--list-sdks" }, { text = true }):wait()
     end)
     if sys_ok and type(res) == "table" and res.code == 0 and res.stdout then
         for line in tostring(res.stdout):gmatch("[^\r\n]+") do
             local v = line:match("^(%d+%.%d+%.%d+%S*)%s")
             if v then
-                table.insert(sdks, v)
+                local major = tonumber(v:match("^(%d+)"))
+                if major and major >= 10 then
+                    table.insert(sdks, v)
+                else
+                    table.insert(older_sdks, v)
+                end
             end
         end
     end
 
     if #sdks > 0 then
         ok(
-            ("extractor will use .NET SDK discovery (%d SDK(s): %s)"):format(
+            ("extractor will use .NET SDK discovery (%d .NET 10+ SDK(s): %s)"):format(
                 #sdks,
                 table.concat(sdks, ", ")
             )
@@ -281,17 +286,34 @@ local function check_extractor_prereqs(install)
         return
     end
 
-    err(
-        "extractor will crash: no MSBuild.dll under "
+    local hints = {
+        "msbuild-extractor-sample's RegisterMSBuild needs either a VS-bundled MSBuild (MSBuild.exe + Microsoft.Build.dll) under <VS>\\MSBuild\\Current\\Bin\\{amd64,,x86,arm64} or a .NET 10 SDK or later.",
+        "Fix option 1 (recommended): install .NET 10 SDK or later from https://aka.ms/dotnet/download — then `dotnet --list-sdks` will show a 10.x.x (or newer) entry.",
+        "Fix option 2: in Visual Studio Installer, Modify your VS 2022 install and ensure the *MSBuild* component (under C++ build tools / individual components) is checked, so MSBuild.exe and Microsoft.Build.dll land on disk.",
+        "Until then, builds still work, but compile_commands.json generation will fail with `Unhandled exception ... hostfxr_resolve_sdk2 ... No .NET SDKs were found.`",
+    }
+    if #older_sdks > 0 then
+        table.insert(
+            hints,
+            1,
+            ("Detected .NET SDK(s) but none are version 10 or later: %s — these are not supported by the extractor."):format(
+                table.concat(older_sdks, ", ")
+            )
+        )
+    end
+
+    local msg
+    if #older_sdks > 0 then
+        msg = "extractor will crash: no usable VS-bundled MSBuild under "
             .. install
-            .. " and no .NET SDK installed",
-        {
-            "msbuild-extractor-sample's RegisterMSBuild needs either MSBuild.dll under <VS>\\MSBuild\\Current\\Bin\\{amd64,,x86} or a .NET SDK.",
-            "Fix option 1 (recommended): install a .NET SDK from https://aka.ms/dotnet/download — then `dotnet --list-sdks` will show ≥1 entry.",
-            "Fix option 2: in Visual Studio Installer, Modify your VS 2022 install and ensure the *MSBuild* component (under C++ build tools / individual components) is checked, so MSBuild.dll lands on disk.",
-            "Until then, builds still work, but compile_commands.json generation will fail with `Unhandled exception ... hostfxr_resolve_sdk2 ... No .NET SDKs were found.`",
-        }
-    )
+            .. "\\MSBuild\\Current\\Bin\\{amd64,,x86,arm64} (need MSBuild.exe + Microsoft.Build.dll) and no .NET 10 SDK or later installed (older SDKs detected but unsupported)"
+    else
+        msg = "extractor will crash: no usable VS-bundled MSBuild under "
+            .. install
+            .. "\\MSBuild\\Current\\Bin\\{amd64,,x86,arm64} (need MSBuild.exe + Microsoft.Build.dll) and no .NET 10 SDK or later installed"
+    end
+
+    err(msg, hints)
 end
 
 local function check_compile_commands(msvc)
