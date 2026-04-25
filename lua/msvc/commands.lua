@@ -446,13 +446,6 @@ subcommands.discover = {
     end,
 }
 
-subcommands.health = {
-    desc = "Run :checkhealth msvc",
-    impl = function()
-        vim.cmd("checkhealth msvc")
-    end,
-}
-
 -- Guard for build/compile. These require only an active profile;
 -- the merged profile (or `profiles.default`) supplies all dev-env
 -- parameters needed by `Msvc:resolve`.

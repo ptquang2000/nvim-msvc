@@ -47,8 +47,9 @@ Then, inside any directory containing a `.sln` or `.vcxproj`:
 
 `:Msvc build` and `:Msvc compile` both require an active profile. The
 profile's dev-env fields (`arch`, `host_arch`, `vcvars_ver`, `winsdk`,
-`vs_*`, …) supply the dev env when needed (always for `compile`, and
-additionally for `build` when `settings.use_dev_env = true`).
+`vs_*`, …) supply the dev env when needed. The compile_commands
+extractor always receives a fully-resolved developer-prompt env so
+MSBuildLocator can find MSBuild without a standalone .NET SDK.
 
 `:Msvc build` will auto-discover the solution, resolve the MSVC dev
 environment from the active profile, spawn `MSBuild.exe`
@@ -72,10 +73,30 @@ require("msvc").setup({
         cache_env       = true,                -- persist resolved dev env across sessions
         env_cache_path  = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
         last_log_path   = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
-        use_dev_env     = false,               -- source VsDevCmd/vcvarsall before MSBuild
         on_build_start  = nil,                 -- fun(ctx)        — back-compat shim
         on_build_done   = nil,                 -- fun(ctx, ok, ms) — back-compat shim
         on_build_cancel = nil,                 -- fun(ctx)        — back-compat shim
+
+        -- compile_commands.json generation via the upstream
+        -- microsoft/msbuild-extractor-sample tool. The
+        -- `msbuild-extractor-sample` executable must be on PATH (matches
+        -- nvim-treesitter's `tree-sitter` CLI model — the binary is
+        -- implicit and not configurable). When found, it is invoked
+        -- automatically after every successful `:Msvc build`; when
+        -- missing, the build still succeeds and a one-time warning is
+        -- logged.
+        compile_commands = {
+            enabled    = true,                 -- auto-run after a successful build
+            outdir     = nil,                  -- output dir for compile_commands.json
+                                               --   (defaults to the .sln's directory;
+                                               --    relative paths resolve to sln/proj/cwd)
+            builddir   = nil,                  -- if set, recursively scan for *.vcxproj
+                                               --   under it and merge into the main file
+                                               --   (relative paths resolve to sln/proj/cwd)
+            merge      = true,                 -- pass --merge to the extractor
+            deduplicate = true,                -- pass --deduplicate to the extractor
+            extra_args = nil,                  -- extra extractor flags (e.g. { "--validate" })
+        },
     },
 
     -- All profiles live under `profiles`. `profiles.default` is the
@@ -159,8 +180,7 @@ All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
   been pinned via `:Msvc project <name>`, builds that `.vcxproj` instead
   (with `/p:SolutionDir=<sln-dir>\` so `$(SolutionDir)`-relative paths
   still resolve). Optional MSBuild target: `Build` / `Rebuild` / `Clean`.
-  Requires an active profile. If `settings.use_dev_env = true`, the dev
-  env is sourced from the active profile.
+  Requires an active profile.
 - `:Msvc rebuild` — Run MSBuild with `target=Rebuild`.
 - `:Msvc clean` — Run MSBuild with `target=Clean`.
 - `:Msvc cancel` — Cancel the in-flight MSBuild invocation
@@ -203,11 +223,49 @@ All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
 - `:Msvc discover` — Re-scan cwd for the parent `.sln` and refresh the
   cached project list. Useful when you `:cd` into a different repo
   during the same Neovim session.
-- `:Msvc health` — Run `:checkhealth msvc`.
+- `:checkhealth msvc` — Run the plugin health check (reports OS / Neovim version,
+  vswhere & MSBuild discovery, the active solution / project / profile,
+  and the `compile_commands.json` extractor configuration).
 - `:Msvc compile` — Compile the current buffer's source file (placeholder
   hook; logs a warning until `Msvc:compile_current_file` lands). Requires
   an active profile.
 - `:Msvc help` — List every `:Msvc` subcommand.
+
+## compile_commands.json
+
+If the
+[`msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
+executable is on `PATH`, nvim-msvc invokes it after every successful
+`:Msvc build` to (re)generate a clang-style `compile_commands.json`. The
+extractor never compiles anything — it only evaluates the project at
+design time and runs `GetClCommandLines`. Modeled on nvim-treesitter's
+`tree-sitter` CLI integration: the binary name is **implicit** and not
+configurable; when missing, the feature is a no-op and a one-time
+warning is logged. Use `:checkhealth msvc` to verify discovery.
+
+```lua
+require("msvc").setup({
+    settings = {
+        compile_commands = {
+            outdir   = "C:\\src\\myapp",             -- defaults to the .sln's directory
+            builddir = "C:\\src\\myapp\\out\\build", -- optional CMake / out-of-source build dir
+        },
+    },
+})
+```
+
+`outdir` (defaults to the active `.sln` directory) is where
+`compile_commands.json` is written. Both `outdir` and `builddir` accept
+either an absolute path or a relative one; relative paths are resolved
+against the active solution's directory, then the active project's
+directory, then Neovim's cwd (in that order). When `builddir` is set, every
+`*.vcxproj` discovered recursively under it is added as an extra
+`--project` input and merged into the same file via the tool's
+`--merge --deduplicate` modes — useful for CMake / GN trees that emit
+out-of-source `.vcxproj` files alongside the in-tree solution. CMake
+VS-generator meta-targets (`ALL_BUILD`, `ZERO_CHECK`, `INSTALL`,
+`PACKAGE`, `RUN_TESTS`, `RESTORE`, and the CTest dashboard targets) are
+filtered out of the builddir scan so the extractor never receives them.
 
 ## Events
 

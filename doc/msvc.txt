@@ -75,7 +75,6 @@ Default schema (from `lua/msvc/config.lua`):
                           .. "/nvim-msvc-env.json",
         last_log_path   = vim.fn.stdpath("cache")
                           .. "/nvim-msvc-last.log",
-        use_dev_env     = false,
         on_build_start  = nil,
         on_build_done   = nil,
         on_build_cancel = nil,
@@ -126,13 +125,19 @@ Default schema (from `lua/msvc/config.lua`):
 <
 
 Activate a profile before building. The profile supplies the dev env
-to `:Msvc compile` (and to `:Msvc build` when
-`settings.use_dev_env = true`):
+to `:Msvc compile` and to the compile_commands extractor; `:Msvc
+build` uses only the VS installation root so per-project toolsets
+resolve from `<PlatformToolset>`:
 >vim
     :Msvc profile debug_x64
     :Msvc build
     :Msvc compile
 <
+
+`settings.compile_commands.outdir` and `settings.compile_commands.builddir`
+accept absolute or relative paths; relative paths are resolved against
+the active solution's directory, then the active project's directory,
+then Neovim's cwd (in that order).
 
 On the first `setup()` call the alphabetically-first user-defined
 profile is auto-selected when nothing is active yet, so typical setups
@@ -214,7 +219,6 @@ Subcommands:
                         again.
     discover            Re-scan cwd for the parent .sln and refresh the
                         cached project list.
-    health              Run `:checkhealth msvc`.
     compile             Compile the current buffer's source file
                         (placeholder; logs a warning until wired).
     help                List every :Msvc subcommand.

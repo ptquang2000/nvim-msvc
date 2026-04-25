@@ -9,6 +9,7 @@ local Discover = require("msvc.discover")
 local State = require("msvc.state").MsvcState
 local Build = require("msvc.build").MsvcBuild
 local QuickFix = require("msvc.quickfix")
+local CompileCommands = require("msvc.compile_commands")
 
 ---@class Msvc
 ---@field config MsvcConfig
@@ -75,6 +76,7 @@ function Msvc:setup(partial_config)
     end
     self.hooks_setup = true
     self:_warm_solution()
+    self:_install_compile_commands_listener()
     Log:install_live_tail()
     vim.api.nvim_create_autocmd("BufWritePost", {
         group = Autocmd.group,
@@ -96,6 +98,65 @@ function Msvc:setup(partial_config)
     self:_auto_select_defaults()
     self:_warm_install_path()
     return self
+end
+
+--- Register an extension listener that auto-runs the
+--- msbuild-extractor-sample tool after a successful `:Msvc build` to
+--- (re)generate compile_commands.json. Idempotent: setup() is guarded by
+--- `hooks_setup`, but we additionally guard against accidental
+--- re-installation by checking a flag on the singleton.
+function Msvc:_install_compile_commands_listener()
+    if self._compile_commands_listener_installed then
+        return
+    end
+    self._compile_commands_listener_installed = true
+    local self_ = self
+    self.extensions:add_listener({
+        [Ext.event_names.BUILD_DONE] = function(build, ok, _elapsed_ms)
+            if not ok then
+                return
+            end
+            local cc = self_.config
+                and self_.config.settings
+                and self_.config.settings.compile_commands
+            if not CompileCommands.is_enabled(cc) then
+                return
+            end
+            local ctx = (build and build.ctx) or {}
+            -- Prefer the active solution as the extractor's primary
+            -- input; fall back to whatever project MSBuild ran against.
+            local solution = self_.state.solution
+            local project = ctx.project
+            local is_sln = type(project) == "string"
+                and project:lower():match("%.sln[x]?$") ~= nil
+            if is_sln and (not solution or solution == "") then
+                solution = project
+                project = nil
+            end
+            -- The extractor MUST be invoked under a fully-populated
+            -- developer-prompt env; without it MSBuildLocator falls
+            -- back to a .NET SDK probe and crashes when no SDK is
+            -- installed ("No .NET SDKs were found" / 0xE0434352). The
+            -- build path may have run without sourcing the dev env
+            -- (its preferred mode for mixed-toolset solutions), so we
+            -- resolve it here unconditionally. `DevEnv.resolve` is
+            -- cached per (install_path, arch, vcvars_ver) so the call
+            -- is cheap on subsequent builds.
+            local env = ctx.env
+            if type(env) ~= "table" or env.VSINSTALLDIR == nil then
+                env = self_:resolve({ profile = self_.state:profile_name() })
+                    or env
+            end
+            CompileCommands.generate({
+                solution = solution,
+                project = project,
+                configuration = ctx.configuration,
+                platform = ctx.platform,
+                env = env,
+                cc = cc,
+            })
+        end,
+    })
 end
 
 --- Walk up from cwd to find the nearest `.sln`, pin it on
@@ -210,8 +271,9 @@ function Msvc:resolve(opts)
 end
 
 --- Resolve and cache only the VS installation path (no VsDevCmd).
---- Used by the build path when settings.use_dev_env = false so we avoid
---- sourcing VsDevCmd's default toolset into the spawned MSBuild env.
+--- Used by the build path so we avoid sourcing VsDevCmd's default
+--- toolset into the spawned MSBuild env (MSBuild resolves per-project
+--- toolsets from <PlatformToolset> on its own).
 ---@return string|nil install_path
 function Msvc:resolve_install_path()
     if self.state.install_path and self.state.install_path ~= "" then
@@ -260,9 +322,11 @@ end
 --- Kick off a new MSBuild invocation. Returns the MsvcBuild handle (or nil
 --- on failure). Refuses to start if a build is already running.
 --- Requires an active profile to be selected (`:Msvc profile <name>`).
---- The dev env is sourced from the active profile when
---- `settings.use_dev_env = true` — in that case the env is sourced via
---- `Msvc:resolve`.
+--- The build path resolves only the VS installation root (no VsDevCmd
+--- sourcing) so MSBuild can pick per-project toolsets from
+--- <PlatformToolset>. The compile_commands extractor, in contrast,
+--- always receives a fully-resolved developer-prompt env (see
+--- `_install_compile_commands_listener`).
 ---@param opts table|nil
 ---@return MsvcBuild|nil
 function Msvc:build(opts)
@@ -289,25 +353,11 @@ function Msvc:build(opts)
         Log:error("no .sln/.vcxproj found")
         return nil
     end
-    local use_dev_env = self.config
-            and self.config.settings
-            and self.config.settings.use_dev_env
-        or false
-    local env, install_path
-    if use_dev_env then
-        env = self:resolve({ profile = profile_name })
-        if not env then
-            return nil
-        end
-        install_path = self.state.install_path
-    else
-        install_path = self:resolve_install_path()
-        if not install_path then
-            return nil
-        end
+    local install_path = self:resolve_install_path()
+    if not install_path then
+        return nil
     end
-    local msbuild_path = (env and DevEnv.find_msbuild(env))
-        or DevEnv.find_msbuild(install_path)
+    local msbuild_path = DevEnv.find_msbuild(install_path)
     if not msbuild_path then
         Log:error("MSBuild.exe not found")
         return nil
@@ -353,7 +403,7 @@ function Msvc:build(opts)
         max_cpu_count = profile.max_cpu_count or profile.jobs or 0,
         no_logo = profile.no_logo ~= false,
         extra_args = extra_args,
-        env = env,
+        env = nil,
         msbuild_path = msbuild_path,
         cwd = vim.fn.fnamemodify(project, ":h"),
     }

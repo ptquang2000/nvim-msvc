@@ -45,6 +45,7 @@ plugin/msvc.lua              Loads the plugin on Neovim startup
     ├── extensions.lua       MsvcExtensions event bus + frozen event_names
     ├── log.lua              MsvcLog ring buffer + vim.notify routing
     ├── build.lua            MsvcBuild: async MSBuild job, output streaming
+    ├── compile_commands.lua Wraps msbuild-extractor-sample for compile_commands.json
     ├── devenv.lua           vcvarsall / VsDevCmd resolution + env caching
     ├── discover.lua         .sln / .vcxproj walk-up discovery
     ├── vswhere.lua          vswhere.exe wrapper, install_path lookup
@@ -131,6 +132,28 @@ Defines the MSBuild / `cl.exe` / `link.exe` `errorformat` string and
 through this module after MSBuild exits; errors and warnings are
 published to a project-local quickfix list.
 
+### `compile_commands.lua` — clang DB extractor wrapper
+Pure module that wraps the upstream
+[`microsoft/msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
+tool. The binary name (`msbuild-extractor-sample`) is **implicit**: the
+module probes `PATH` via `vim.fn.exepath` (cached on the module) and
+treats discovery the same way `nvim-treesitter` treats the
+`tree-sitter` CLI — present means the integration is active, missing
+means a one-time warning is logged and the build itself is unaffected.
+`init.lua` installs a `BUILD_DONE` listener during `setup()` that, on
+success, calls `CompileCommands.generate({ solution, project,
+configuration, platform, cc = settings.compile_commands })`. The module
+spawns the tool asynchronously via `vim.system`, composes
+`--solution` / `--project` / `-c` / `-a` / `-o` / `--merge` /
+`--deduplicate` from the merged settings, and (when
+`settings.compile_commands.builddir` is set) feeds every `*.vcxproj`
+discovered recursively under that directory as an extra `--project`
+input so the resulting `compile_commands.json` covers both the in-tree
+solution and any out-of-source projects. The builddir scan filters out
+CMake VS-generator meta-targets (`ALL_BUILD`, `ZERO_CHECK`, `INSTALL`,
+`PACKAGE`, `RUN_TESTS`, `RESTORE`, and CTest dashboard targets) by
+case-insensitive basename match.
+
 ### `extensions.lua` — event bus
 Singleton `MsvcExtensions` plus a frozen `event_names` table. Listeners
 are plain tables keyed by event name; `:add_listener({ ... })` returns
@@ -166,7 +189,8 @@ commands.subcommands.build.impl
 Msvc:build(opts)
    │  resolve effective profile view via Config.get_profile,
    │  layered over profile_overrides[name]
-   │  if settings.use_dev_env: DevEnv.resolve(view) ── ENV_RESOLVED ──▶
+   │  resolve_install_path() (no VsDevCmd sourcing for the build env
+   │  so per-project <PlatformToolset> toolsets aren't pinned)
    ▼
 MsvcBuild:start(ctx)
    │  spawn MSBuild via vim.system, stream stdout/stderr

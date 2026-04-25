@@ -184,17 +184,61 @@ function M.find_solutions(start_dir, opts)
     return out
 end
 
+--- Canonical CMake VS-generator meta-target basenames (without `.vcxproj`).
+--- Compared case-insensitively against the file basename. These are emitted
+--- by CMake alongside real targets and have no compile commands worth
+--- extracting; the implicit builddir scan filters them out.
+M.CMAKE_META_TARGETS = {
+    "ALL_BUILD",
+    "ZERO_CHECK",
+    "INSTALL",
+    "PACKAGE",
+    "RUN_TESTS",
+    "RESTORE",
+    "Continuous",
+    "Experimental",
+    "Nightly",
+    "NightlyMemoryCheck",
+}
+
+--- Build a lowercase lookup set of meta-target basenames.
+--- @return table<string, boolean>
+local function meta_target_set()
+    local set = {}
+    for _, n in ipairs(M.CMAKE_META_TARGETS) do
+        set[n:lower()] = true
+    end
+    return set
+end
+
+--- True when `name` is a CMake-generated meta-target `.vcxproj` filename.
+--- Case-insensitive basename match against `M.CMAKE_META_TARGETS`.
+--- @param name string  basename (with or without extension) or full path
+--- @return boolean
+local function is_cmake_meta_target(name)
+    if type(name) ~= "string" or name == "" then
+        return false
+    end
+    local base = vim.fn.fnamemodify(name, ":t:r"):lower()
+    return meta_target_set()[base] == true
+end
+
 --- Recursively (BFS) find `*.vcxproj` files beneath `root_dir`. Skips
 --- ignored directories and stops once `max_files` projects are collected.
+--- By default, CMake VS-generator meta-targets (ALL_BUILD, ZERO_CHECK,
+--- INSTALL, PACKAGE, RUN_TESTS, RESTORE, Continuous, Experimental, Nightly,
+--- NightlyMemoryCheck) are filtered out so the extractor never sees them.
 --- @param root_dir string
 --- @param opts table|nil
----     @field max_files integer|nil       default 5000
----     @field ignore_dirs string[]|nil    default DEFAULT_IGNORE_DIRS
+---     @field max_files integer|nil          default 5000
+---     @field ignore_dirs string[]|nil       default DEFAULT_IGNORE_DIRS
+---     @field filter_meta_targets boolean|nil default true
 --- @return string[]
 function M.find_vcxprojs(root_dir, opts)
     opts = opts or {}
     local max_files = opts.max_files or 5000
     local ignore = to_set(opts.ignore_dirs or DEFAULT_IGNORE_DIRS)
+    local filter_meta = opts.filter_meta_targets ~= false
     local out = {}
     local root = Util.normalize_path(root_dir)
     if root == nil or not Util.is_dir(root) then
@@ -218,7 +262,10 @@ function M.find_vcxprojs(root_dir, opts)
                         queue[#queue + 1] = full
                     end
                 elseif t == "file" or t == "link" then
-                    if name:lower():sub(-8) == ".vcxproj" then
+                    if
+                        name:lower():sub(-8) == ".vcxproj"
+                        and not (filter_meta and is_cmake_meta_target(name))
+                    then
                         out[#out + 1] = full
                         if #out >= max_files then
                             break

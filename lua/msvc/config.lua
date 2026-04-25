@@ -9,10 +9,19 @@
 ---@field cache_env boolean
 ---@field env_cache_path string
 ---@field last_log_path string
----@field use_dev_env boolean
 ---@field on_build_start fun(ctx: table)|nil
 ---@field on_build_done fun(ctx: table, ok: boolean, elapsed_ms: integer)|nil
 ---@field on_build_cancel fun(ctx: table)|nil
+---@field compile_commands MsvcCompileCommandsSettings
+
+---@class MsvcCompileCommandsSettings
+---@field enabled? boolean        Auto-generate after a successful :Msvc build (default true when extractor is set).
+---@field extractor? string[]     argv prefix to invoke msbuild-extractor-sample. nil disables the feature.
+---@field outdir? string          Directory to write compile_commands.json (defaults to the solution's directory). Absolute or relative; relative paths are resolved against the solution dir, then project dir, then cwd.
+---@field builddir? string        If set, recursively scan for *.vcxproj and merge into compile_commands.json. Absolute or relative; relative paths are resolved against the solution dir, then project dir, then cwd.
+---@field merge? boolean          Pass `--merge` to the extractor (default true).
+---@field deduplicate? boolean    Pass `--deduplicate` to the extractor (default true).
+---@field extra_args? string[]    Extra args appended to the extractor invocation.
 
 ---@class MsvcPartialSettings
 ---@field notify_level? integer
@@ -25,10 +34,10 @@
 ---@field cache_env? boolean
 ---@field env_cache_path? string
 ---@field last_log_path? string
----@field use_dev_env? boolean
 ---@field on_build_start? fun(ctx: table)
 ---@field on_build_done? fun(ctx: table, ok: boolean, elapsed_ms: integer)
 ---@field on_build_cancel? fun(ctx: table)
+---@field compile_commands? MsvcCompileCommandsSettings
 
 ---@class MsvcProfileItem
 ---@field configuration? string
@@ -86,10 +95,21 @@ local KNOWN_SETTINGS = {
     cache_env = "boolean",
     env_cache_path = "string",
     last_log_path = "string",
-    use_dev_env = "boolean",
     on_build_start = "function",
     on_build_done = "function",
     on_build_cancel = "function",
+    compile_commands = "table",
+}
+
+-- Inner schema for `settings.compile_commands`. Validated separately
+-- because the value lives nested under `settings`, not on a profile.
+local KNOWN_COMPILE_COMMANDS = {
+    enabled = "boolean",
+    outdir = "string",
+    builddir = "string",
+    merge = "boolean",
+    deduplicate = "boolean",
+    extra_args = "table",
 }
 
 -- Fields that may appear on a profile entry. A profile carries the full
@@ -122,6 +142,7 @@ local KNOWN_PROFILE = {
 
 M.KNOWN_SETTINGS = KNOWN_SETTINGS
 M.KNOWN_PROFILE = KNOWN_PROFILE
+M.KNOWN_COMPILE_COMMANDS = KNOWN_COMPILE_COMMANDS
 
 --- Hard-coded defaults. A fresh table is returned on every call so callers
 --- can freely mutate the result without poisoning future invocations.
@@ -139,15 +160,22 @@ function M.get_default_config()
             cache_env = true,
             env_cache_path = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
             last_log_path = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
-            -- Source VsDevCmd.bat/vcvarsall.bat and forward the resolved env
-            -- to MSBuild. Off by default: MSBuild.exe resolves per-project
-            -- toolsets from <PlatformToolset> on its own, and a sourced env
-            -- pins INCLUDE/LIB/PATH to VsDevCmd's default (latest) toolset
-            -- which breaks mixed-toolset solutions (v141/v142/v143/v144).
-            use_dev_env = false,
             on_build_start = nil,
             on_build_done = nil,
             on_build_cancel = nil,
+            -- Integration with msbuild-extractor-sample
+            -- (https://github.com/microsoft/msbuild-extractor-sample).
+            -- The `msbuild-extractor-sample` executable must be on PATH;
+            -- when present, `:Msvc build` auto-runs it after a successful
+            -- build to (re)generate compile_commands.json.
+            compile_commands = {
+                enabled = true,
+                outdir = nil,
+                builddir = nil,
+                merge = true,
+                deduplicate = true,
+                extra_args = nil,
+            },
         },
         profiles = {
             default = {
@@ -163,7 +191,6 @@ function M.get_default_config()
                     "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
                 },
                 vswhere_path = nil,
-                -- See settings.use_dev_env note above.
                 vcvars_ver = nil,
                 arch = "x64",
                 host_arch = "x64",
@@ -216,7 +243,20 @@ function M.merge_config(partial_config, latest_config)
     config.profiles = config.profiles or {}
     for k, v in pairs(partial_config) do
         if k == "settings" then
-            config.settings = vim.tbl_extend("force", config.settings, v or {})
+            local cur = config.settings or {}
+            local incoming = v or {}
+            -- Merge nested `compile_commands` per-key so users can override
+            -- a single field without clobbering the rest.
+            local cc_partial = incoming.compile_commands
+            local merged = vim.tbl_extend("force", cur, incoming)
+            if cc_partial ~= nil then
+                merged.compile_commands = vim.tbl_extend(
+                    "force",
+                    cur.compile_commands or {},
+                    cc_partial
+                )
+            end
+            config.settings = merged
         elseif k == "profiles" then
             for pname, pdef in pairs(v or {}) do
                 local prev = config.profiles[pname] or {}
@@ -249,12 +289,26 @@ local function check_type(label, value, expected)
     end
 end
 
+local REMOVED_SETTINGS = {
+    use_dev_env = "removed in favor of always-on developer-prompt resolution for the compile_commands extractor; delete this key from your config",
+}
+
 local function validate_settings(settings)
     if settings == nil then
         return
     end
     check_type("settings", settings, "table")
     for k, v in pairs(settings) do
+        local removed_msg = REMOVED_SETTINGS[k]
+        if removed_msg ~= nil then
+            error(
+                ("msvc.config: settings.%s has been removed: %s"):format(
+                    k,
+                    removed_msg
+                ),
+                2
+            )
+        end
         local expected = KNOWN_SETTINGS[k]
         if expected == nil then
             if KNOWN_PROFILE[k] then
@@ -298,6 +352,48 @@ local function validate_settings(settings)
         and settings.search_depth < 0
     then
         error("msvc.config: settings.search_depth must be >= 0", 2)
+    end
+    if settings.compile_commands ~= nil then
+        check_type(
+            "settings.compile_commands",
+            settings.compile_commands,
+            "table"
+        )
+        for k, v in pairs(settings.compile_commands) do
+            local expected = KNOWN_COMPILE_COMMANDS[k]
+            if expected == nil then
+                Log:warn(
+                    "config: unknown settings.compile_commands key %q",
+                    tostring(k)
+                )
+            elseif v ~= nil then
+                local got = type(v)
+                if got ~= expected then
+                    error(
+                        ("msvc.config: settings.compile_commands.%s must be a %s, got %s"):format(
+                            k,
+                            expected,
+                            got
+                        ),
+                        2
+                    )
+                end
+                if expected == "table" and k == "extra_args" then
+                    for i, item in ipairs(v) do
+                        if type(item) ~= "string" then
+                            error(
+                                ("msvc.config: settings.compile_commands.%s[%d] must be a string, got %s"):format(
+                                    k,
+                                    i,
+                                    type(item)
+                                ),
+                                2
+                            )
+                        end
+                    end
+                end
+            end
+        end
     end
 end
 

@@ -130,6 +130,15 @@ describe("msvc.config", function()
         end)
     end)
 
+    it("validate rejects the removed use_dev_env setting", function()
+        local Config = require("msvc.config")
+        local ok, err = pcall(Config.validate, {
+            settings = { use_dev_env = true },
+        })
+        assert.is_false(ok)
+        assert.matches("use_dev_env", tostring(err))
+    end)
+
     it("validate accepts a freshly built default config", function()
         local Config = require("msvc.config")
         Config.validate(Config.get_default_config())

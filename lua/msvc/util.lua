@@ -45,6 +45,52 @@ function M.normalize_path(p)
     return s
 end
 
+--- True when the given path is absolute. Recognized forms:
+---   * Windows drive-letter: "C:\foo", "c:/foo" (also bare "C:" / "C:\")
+---   * Windows UNC:          "\\server\share\..." (or with forward slashes)
+---   * POSIX absolute:       "/foo"
+--- Empty / nil paths are not absolute.
+--- @param p string|nil
+--- @return boolean
+function M.is_absolute(p)
+    if p == nil or p == "" then
+        return false
+    end
+    local s = tostring(p)
+    -- UNC: leading "\\" or "//"
+    if s:sub(1, 2) == "\\\\" or s:sub(1, 2) == "//" then
+        return true
+    end
+    -- Windows drive letter: "C:" optionally followed by separator
+    if s:match("^%a:[\\/]?") then
+        return true
+    end
+    -- POSIX absolute
+    if s:sub(1, 1) == "/" then
+        return true
+    end
+    return false
+end
+
+--- Resolve `p` against `anchor`. Absolute paths are returned normalized
+--- as-is; relative paths are joined onto `anchor`. Returns nil only when
+--- both `p` and `anchor` are empty.
+--- @param p string|nil
+--- @param anchor string|nil
+--- @return string|nil
+function M.resolve_path(p, anchor)
+    if p == nil or p == "" then
+        return nil
+    end
+    if M.is_absolute(p) then
+        return M.normalize_path(p)
+    end
+    if anchor == nil or anchor == "" then
+        return M.normalize_path(p)
+    end
+    return M.join_path(anchor, p)
+end
+
 --- Join two or more path components using the OS separator.
 --- @vararg string
 --- @return string
