@@ -34,49 +34,15 @@ function Msvc:new()
         -- Projects parsed from the active solution. Populated by
         -- `_warm_solution` during setup; drives `:Msvc project` completion.
         solution_projects = {},
-        -- Transient `:Msvc update` overrides keyed by profile / resolve
-        -- name. Cleared whenever the corresponding selection changes via
-        -- `set_profile` / `set_resolve`, so picking a profile or resolve
-        -- always starts from the configured baseline.
+        -- Transient `:Msvc update` overrides keyed by profile name.
+        -- Cleared whenever the profile is re-selected via `set_profile`,
+        -- so picking a profile always starts from the configured baseline.
         profile_overrides = {},
-        resolve_overrides = {},
         -- Cached list of Visual Studio installations discovered by the
         -- async vswhere lookup kicked off in `setup`. Used to drive
         -- `:Msvc update install_path` completion.
         vs_installations = {},
     }, self)
-end
-
---- Sorted list of user-defined profile names (excludes `settings`,
---- `default`, `resolves`).
----@return string[]
-local function list_profile_names(config)
-    local names = {}
-    for k, v in pairs(config or {}) do
-        if
-            type(v) == "table"
-            and k ~= "settings"
-            and k ~= "default"
-            and k ~= "resolves"
-        then
-            names[#names + 1] = k
-        end
-    end
-    table.sort(names)
-    return names
-end
-
---- Sorted list of user-defined resolve names.
----@return string[]
-local function list_resolve_names(config)
-    local names = {}
-    for k, v in pairs((config or {}).resolves or {}) do
-        if type(v) == "table" then
-            names[#names + 1] = k
-        end
-    end
-    table.sort(names)
-    return names
 end
 
 --- Idempotent setup. Safe to call multiple times — the second call merges
@@ -153,58 +119,40 @@ function Msvc:_warm_solution()
     local norm = Util.normalize_path(sln) or sln
     self.state:set("solution", norm)
     self.solution_projects = Discover.parse_solution_projects(norm)
-    Log:debug(
-        "warm solution: %s (%d projects)",
-        norm,
-        #self.solution_projects
-    )
+    Log:debug("warm solution: %s (%d projects)", norm, #self.solution_projects)
 end
 
 --- On first setup, select the alphabetically-first user-defined profile
---- and resolve when nothing is active yet. Picking a stable order keeps
---- behaviour deterministic across Neovim restarts.
+--- when nothing is active yet. Picking a stable order keeps behaviour
+--- deterministic across Neovim restarts.
 function Msvc:_auto_select_defaults()
     if not self.state:profile_name() then
-        local profiles = list_profile_names(self.config)
+        local profiles = Config.list_profile_names(self.config)
         if profiles[1] then
-            self:set_profile(profiles[1])
+            self:set_profile(profiles[1], true)
             Log:debug("auto-selected profile %q", profiles[1])
-        end
-    end
-    if not self.state:resolve_name() then
-        local resolves = list_resolve_names(self.config)
-        if resolves[1] then
-            self:set_resolve(resolves[1])
-            Log:debug("auto-selected resolve %q", resolves[1])
         end
     end
 end
 
 --- Kick off an asynchronous vswhere lookup so that `state.install_path`
 --- is populated by the time the user triggers a build / resolve. No-op
---- when an install_path is already known (state, configured default, or
---- the active resolve entry). Failures are silent — the synchronous
---- fallbacks in `Msvc:build` still run if needed.
+--- when an install_path is already known (state or configured profile).
+--- Failures are silent — the synchronous fallbacks in `Msvc:build`
+--- still run if needed.
 function Msvc:_warm_install_path()
     if self.state.install_path and self.state.install_path ~= "" then
         return
     end
-    local d = (self.config or {}).default or {}
-    if type(d.install_path) == "string" and d.install_path ~= "" then
+    local profile_name = self.state:profile_name()
+    local profile_view = Config.get_profile(self.config, profile_name)
+    if
+        type(profile_view.install_path) == "string"
+        and profile_view.install_path ~= ""
+    then
         return
     end
-    local resolve_name = self.state:resolve_name()
-    if resolve_name then
-        local entry = Config.get_resolve(self.config, resolve_name) or {}
-        if type(entry.install_path) == "string" and entry.install_path ~= "" then
-            return
-        end
-    end
-    local vswhere_path = d.vswhere_path
-    if resolve_name then
-        local entry = Config.get_resolve(self.config, resolve_name) or {}
-        vswhere_path = entry.vswhere_path or vswhere_path
-    end
+    local vswhere_path = profile_view.vswhere_path
     VsWhere.list_installations_async(
         { vswhere_path = vswhere_path },
         function(installs, err)
@@ -228,21 +176,18 @@ function Msvc:_warm_install_path()
     )
 end
 
---- Resolve the MSVC developer environment for the active resolve.
---- Reads parameters (arch / install_path / vcvars_ver / vs_*) from the
---- named entry under `config.resolves[<state.resolve>]` (merged over
---- `config.default`). `opts` overrides any field from the resolved entry.
+--- Resolve the MSVC developer environment for the active profile. Reads
+--- parameters (arch / install_path / vcvars_ver / vs_*) from the merged
+--- profile view (`profiles.default` ⨉ `profiles[name]`) plus any active
+--- `:Msvc update` overrides. `opts` overrides any field from the
+--- resolved entry.
 --- On success returns the env table and stores `install_path` on state.
 ---@param opts table|nil
 ---@return table|nil env
 function Msvc:resolve(opts)
     opts = opts or {}
-    local name = opts.name or self.state:resolve_name()
-    local entry = Config.get_resolve(self.config, name)
-    local overrides = name and (self.resolve_overrides or {})[name] or nil
-    if overrides and next(overrides) then
-        entry = vim.tbl_extend("force", entry or {}, overrides)
-    end
+    local profile_name = opts.profile or self.state:profile_name()
+    local entry = self:get_profile(profile_name)
     opts.arch = opts.arch or self.state.arch or entry.arch
     opts.install_path = opts.install_path
         or self.state.install_path
@@ -272,8 +217,10 @@ function Msvc:resolve_install_path()
     if self.state.install_path and self.state.install_path ~= "" then
         return self.state.install_path
     end
-    local d = self.config and self.config.default or {}
-    local inst = VsWhere.find_latest({ vswhere_path = d.vswhere_path })
+    local profile_view =
+        Config.get_profile(self.config, self.state:profile_name())
+    local inst =
+        VsWhere.find_latest({ vswhere_path = profile_view.vswhere_path })
     if not inst or not inst.installationPath then
         Log:error("no Visual Studio installation found")
         return nil
@@ -287,19 +234,22 @@ end
 ---@return string|nil solution
 function Msvc:auto_discover()
     self.state:auto_discover()
+    if self.state.solution and self.state.solution ~= "" then
+        self.solution_projects =
+            Discover.parse_solution_projects(self.state.solution)
+    else
+        self.solution_projects = {}
+    end
     return self.state.solution
 end
 
---- Resolve a profile (named or default) into a flat table.
+--- Resolve a profile (named or default) into a flat table holding both
+--- MSBuild and dev-env fields. Includes any active `:Msvc update`
+--- overrides.
 ---@param name string|nil
 ---@return table profile
 function Msvc:get_profile(name)
-    local base
-    if type(Config.get_config) == "function" then
-        base = Config.get_config(self.config, name)
-    else
-        base = Config.get_profile(self.config, name)
-    end
+    local base = Config.get_profile(self.config, name)
     local overrides = name and (self.profile_overrides or {})[name] or nil
     if overrides and next(overrides) then
         return vim.tbl_extend("force", base or {}, overrides)
@@ -310,9 +260,9 @@ end
 --- Kick off a new MSBuild invocation. Returns the MsvcBuild handle (or nil
 --- on failure). Refuses to start if a build is already running.
 --- Requires an active profile to be selected (`:Msvc profile <name>`).
---- The active resolve is consulted only when `settings.use_dev_env = true`
---- — in that case the env is sourced via `Msvc:resolve`, which itself
---- requires a resolve to be selected.
+--- The dev env is sourced from the active profile when
+--- `settings.use_dev_env = true` — in that case the env is sourced via
+--- `Msvc:resolve`.
 ---@param opts table|nil
 ---@return MsvcBuild|nil
 function Msvc:build(opts)
@@ -327,9 +277,7 @@ function Msvc:build(opts)
         return nil
     end
     local profile = self:get_profile(profile_name)
-    local project = opts.project
-        or self.state.project
-        or self.state.solution
+    local project = opts.project or self.state.project or self.state.solution
     if not project then
         local sln = Discover.find_solution()
         if sln then
@@ -347,14 +295,7 @@ function Msvc:build(opts)
         or false
     local env, install_path
     if use_dev_env then
-        local resolve_name = opts.resolve or self.state:resolve_name()
-        if not resolve_name then
-            Log:error(
-                "use_dev_env=true but no resolve selected — use `:Msvc resolve <name>`"
-            )
-            return nil
-        end
-        env = self:resolve({ name = resolve_name })
+        env = self:resolve({ profile = profile_name })
         if not env then
             return nil
         end
@@ -430,22 +371,32 @@ function Msvc:cancel_build()
     end
 end
 
---- Set the active named profile (looked up in `config[name]`).
+--- Emit a multi-line, sorted "key = value" log of the active profile's
+--- effective fields (config + transient overrides).
 ---@param name string
-function Msvc:set_profile(name)
+function Msvc:log_profile(name)
+    if not name then
+        return
+    end
+    local entry = self:get_profile(name)
+    local lines = Config.format_entry_lines(("profile=%s"):format(name), entry)
+    for _, line in ipairs(lines) do
+        Log:info("%s", line)
+    end
+end
+
+--- Set the active named profile (looked up in `config.profiles[name]`).
+--- Clears any transient overrides on the profile.
+---@param name string
+---@param silent? boolean Skip verbose logging (used during setup auto-select).
+function Msvc:set_profile(name, silent)
     if name and self.profile_overrides then
         self.profile_overrides[name] = nil
     end
     self.state:set("profile", name)
-end
-
---- Set the active named resolve (looked up in `config.resolves[name]`).
----@param name string
-function Msvc:set_resolve(name)
-    if name and self.resolve_overrides then
-        self.resolve_overrides[name] = nil
+    if name and not silent then
+        self:log_profile(name)
     end
-    self.state:set("resolve", name)
 end
 
 --- Pin the active project. Accepts either a project name from the cached
@@ -475,26 +426,20 @@ function Msvc:set_project(name_or_path)
     return true
 end
 
---- Re-discover the .sln above cwd and refresh the cached project list.
----@return string|nil solution
-function Msvc:auto_discover()
-    self.state:auto_discover()
-    if self.state.solution and self.state.solution ~= "" then
-        self.solution_projects = Discover.parse_solution_projects(self.state.solution)
-    else
-        self.solution_projects = {}
-    end
-    return self.state.solution
-end
-
---- Log a snapshot of the active solution / project / profile / resolve / install.
+--- Log a snapshot of the active solution / project / profile / install.
+--- The profile section is expanded with its full field set (sorted, one
+--- key per line) for verbose introspection.
 function Msvc:status()
     local s = self.state:get_snapshot()
     Log:info("solution = %s", tostring(s.solution or "<none>"))
     Log:info("project  = %s", tostring(s.project or "<none>"))
-    Log:info("profile  = %s", tostring(self.state:profile_name() or "<none>"))
-    Log:info("resolve  = %s", tostring(self.state:resolve_name() or "<none>"))
     Log:info("install  = %s", tostring(s.install_path or "<none>"))
+    local profile_name = self.state:profile_name()
+    if profile_name then
+        self:log_profile(profile_name)
+    else
+        Log:info("profile  = <none>")
+    end
 end
 
 local instance = Msvc:new()

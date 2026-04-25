@@ -109,12 +109,12 @@ local function write_resolver_script(bat_path, arch, is_vcvars, vcvars_ver)
     local tmp = vim.fn.tempname() .. ".cmd"
     local invocation
     if is_vcvars then
-        invocation = ('call "%s" %s'):format(bat_path, arch)
+        invocation = ("call \"%s\" %s"):format(bat_path, arch)
         if vcvars_ver and vcvars_ver ~= "" then
             invocation = invocation .. " -vcvars_ver=" .. vcvars_ver
         end
     else
-        invocation = ('call "%s" -no_logo -arch=%s'):format(bat_path, arch)
+        invocation = ("call \"%s\" -no_logo -arch=%s"):format(bat_path, arch)
         if vcvars_ver and vcvars_ver ~= "" then
             invocation = invocation .. " -vcvars_ver=" .. vcvars_ver
         end
@@ -203,8 +203,8 @@ function M.resolve(opts)
         Util.basename(bat_path),
         script
     )
-    local res =
-        vim.system({ "cmd.exe", "/d", "/c", script }, { text = true }):wait()
+    local res = vim.system({ "cmd.exe", "/d", "/c", script }, { text = true })
+        :wait()
     pcall(os.remove, script)
     if res.code ~= 0 then
         local stderr = (res.stderr or ""):gsub("%s+$", "")

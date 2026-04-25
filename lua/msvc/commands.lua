@@ -1,6 +1,7 @@
 local M = {}
 local msvc = require("msvc")
 local Log = require("msvc.log")
+local Config = require("msvc.config")
 
 ---@alias MsvcSubcommand { impl: fun(args: string[], opts: table), complete: (fun(arglead: string, cmdline: string, pos: integer): string[])|nil, desc: string|nil }
 
@@ -13,10 +14,9 @@ local function startswith_filter(candidates, arglead)
     end, candidates)
 end
 
--- Property → expected value type. The two tables are disjoint by design:
--- profile entries hold MSBuild parameters, resolve entries hold dev-env
--- parameters. `:Msvc update <prop> <val>` routes to the active profile or
--- the active resolve based on which set the property belongs to.
+-- Property → expected value type. A profile carries the full field set
+-- (MSBuild parameters and dev-env parameters together); `:Msvc update
+-- <prop> <val>` writes overrides to the active profile.
 local PROFILE_PROPS = {
     configuration = "string",
     platform = "string",
@@ -27,22 +27,20 @@ local PROFILE_PROPS = {
     extra_args = "table",
     msbuild_args = "table",
     jobs = "number",
-}
-
-local RESOLVE_PROPS = {
     vs_version = "string",
     vs_prerelease = "boolean",
     vs_products = "table",
     vs_requires = "table",
     vswhere_path = "string",
     vcvars_ver = "string",
+    winsdk = "string",
+    vcvars_spectre_libs = "string",
     arch = "string",
     host_arch = "string",
 }
 
 -- Properties that live on the global runtime state rather than on any
--- profile or resolve entry. Updates to these don't require a profile or
--- resolve to be selected.
+-- profile entry. Updates to these don't require a profile to be selected.
 local STATE_PROPS = {
     install_path = "string",
 }
@@ -59,6 +57,149 @@ local PROP_VALUES = {
     no_logo = { "true", "false" },
     vs_prerelease = { "true", "false" },
     vs_version = { "latest", "16", "17" },
+    vcvars_spectre_libs = { "spectre", "spectre_load", "spectre_load_cf" },
+}
+
+-- Resolve the active VS install path for dynamic completion. Falls back
+-- to the first entry vswhere returned so completion still works before
+-- a profile has been selected.
+local function active_install_path()
+    local p = msvc.state and msvc.state.install_path
+    if type(p) == "string" and p ~= "" then
+        return p
+    end
+    local installs = msvc.vs_installations or {}
+    for _, inst in ipairs(installs) do
+        if type(inst.installationPath) == "string" then
+            return inst.installationPath
+        end
+    end
+    return nil
+end
+
+local function list_dir_entries(dir)
+    local out = {}
+    local ok, scanner = pcall(vim.loop.fs_scandir, dir)
+    if not ok or not scanner then
+        return out
+    end
+    while true do
+        local name, t = vim.loop.fs_scandir_next(scanner)
+        if not name then
+            break
+        end
+        if t == "directory" or t == "link" then
+            out[#out + 1] = name
+        end
+    end
+    return out
+end
+
+-- Enumerate installed MSVC toolsets under <install>\VC\Tools\MSVC\<ver>.
+-- Returns the long form (e.g. "14.39.33519") plus the short major.minor
+-- form ("14.39") that vcvarsall accepts.
+local function list_vcvars_ver()
+    local install = active_install_path()
+    if not install then
+        return {}
+    end
+    local seen = {}
+    local results = {}
+    local function add(v)
+        if v and v ~= "" and not seen[v] then
+            seen[v] = true
+            results[#results + 1] = v
+        end
+    end
+    for _, name in ipairs(list_dir_entries(install .. "\\VC\\Tools\\MSVC")) do
+        add(name)
+        local short = name:match("^(%d+%.%d+)")
+        add(short)
+    end
+    table.sort(results)
+    return results
+end
+
+-- Enumerate installed Windows SDKs via the registry. The Installed Roots
+-- key lists every Windows 10/11 SDK as a subkey (e.g. 10.0.22621.0) and
+-- exposes the install root as the `KitsRoot10` value. We fall back to
+-- scanning the install root's Include directory if the registry walk
+-- comes up empty (e.g. SDK installed to a non-default location whose
+-- registry write was skipped).
+local WINSDK_REG_KEYS = {
+    "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots",
+    "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows Kits\\Installed Roots",
+}
+
+local function reg_query(key)
+    local res = vim.system({ "reg.exe", "query", key, "/s" }, { text = true })
+        :wait()
+    if res.code ~= 0 then
+        return nil
+    end
+    return res.stdout or ""
+end
+
+local function list_winsdk()
+    local seen = {}
+    local results = {}
+    local roots = {}
+    local function add_version(v)
+        if v and v ~= "" and not seen[v] then
+            seen[v] = true
+            results[#results + 1] = v
+        end
+    end
+    local function add_root(p)
+        if not p or p == "" then
+            return
+        end
+        p = p:gsub("[\\/]+$", "")
+        roots[p] = true
+    end
+    for _, key in ipairs(WINSDK_REG_KEYS) do
+        local out = reg_query(key)
+        if out then
+            for line in out:gmatch("[^\r\n]+") do
+                -- Subkey lines: "...\Installed Roots\10.0.22621.0"
+                local ver = line:match("Installed Roots\\(%d[%w%.]*)$")
+                if ver then
+                    add_version(ver)
+                end
+                -- Value lines: "    KitsRoot10    REG_SZ    C:\...\Windows Kits\10\"
+                local root = line:match("KitsRoot%w*%s+REG_%w+%s+(.+)$")
+                if root then
+                    add_root((root:gsub("%s+$", "")))
+                end
+            end
+        end
+    end
+    -- Filesystem fallback: registry may be missing entries when an SDK
+    -- was installed without admin rights or stripped down by a CI image.
+    if vim.tbl_isempty(roots) then
+        local pf86 = os.getenv("ProgramFiles(x86)")
+        local pf = os.getenv("ProgramFiles")
+        if pf86 then
+            roots[pf86 .. "\\Windows Kits\\10"] = true
+        end
+        if pf then
+            roots[pf .. "\\Windows Kits\\10"] = true
+        end
+    end
+    for root in pairs(roots) do
+        for _, name in ipairs(list_dir_entries(root .. "\\Include")) do
+            if name:match("^%d") then
+                add_version(name)
+            end
+        end
+    end
+    table.sort(results)
+    return results
+end
+
+local PROP_VALUE_PROVIDERS = {
+    vcvars_ver = list_vcvars_ver,
+    winsdk = list_winsdk,
 }
 
 local function coerce_value(prop, expected_type, raw)
@@ -122,7 +263,7 @@ subcommands.cancel = {
 }
 
 subcommands.status = {
-    desc = "Echo solution / project / profile / resolve / install snapshot",
+    desc = "Echo solution / project / install snapshot plus the active profile fields",
     impl = function()
         msvc:status()
     end,
@@ -143,61 +284,29 @@ subcommands.build_log = {
 }
 
 subcommands.profile = {
-    desc = "Set (or show) active named profile from config",
+    desc = "Set (or show) active named profile from config.profiles",
     impl = function(args)
         if args[1] then
             msvc:set_profile(args[1])
         else
-            Log:info(
-                "profile=%s",
-                tostring(msvc.state.profile or "<none>")
-            )
+            local name = msvc.state:profile_name()
+            if name then
+                msvc:log_profile(name)
+            else
+                Log:info("profile = <none>")
+            end
         end
     end,
     complete = function(arglead)
-        local names = {}
-        for k, v in pairs(msvc.config or {}) do
-            if
-                type(v) == "table"
-                and k ~= "settings"
-                and k ~= "default"
-                and k ~= "resolves"
-            then
-                names[#names + 1] = k
-            end
-        end
-        table.sort(names)
-        return startswith_filter(names, arglead)
-    end,
-}
-
-subcommands.resolve = {
-    desc = "Set (or show) active named resolve from config.resolves",
-    impl = function(args)
-        if args[1] then
-            msvc:set_resolve(args[1])
-        else
-            Log:info(
-                "resolve=%s",
-                tostring(msvc.state.resolve or "<none>")
-            )
-        end
-    end,
-    complete = function(arglead)
-        local names = {}
-        local resolves = (msvc.config or {}).resolves or {}
-        for k, v in pairs(resolves) do
-            if type(v) == "table" then
-                names[#names + 1] = k
-            end
-        end
-        table.sort(names)
-        return startswith_filter(names, arglead)
+        return startswith_filter(
+            Config.list_profile_names(msvc.config or {}),
+            arglead
+        )
     end,
 }
 
 subcommands.update = {
-    desc = "Override a property on the active profile or resolve",
+    desc = "Override a property on the active profile",
     impl = function(args)
         local prop = args[1]
         if not prop or prop == "" then
@@ -208,9 +317,6 @@ subcommands.update = {
         if PROFILE_PROPS[prop] then
             kind = "profile"
             expected = PROFILE_PROPS[prop]
-        elseif RESOLVE_PROPS[prop] then
-            kind = "resolve"
-            expected = RESOLVE_PROPS[prop]
         elseif STATE_PROPS[prop] then
             kind = "state"
             expected = STATE_PROPS[prop]
@@ -250,23 +356,6 @@ subcommands.update = {
                 prop,
                 vim.inspect(value, { newline = "", indent = "" })
             )
-        elseif kind == "resolve" then
-            local name = msvc.state:resolve_name()
-            if not name then
-                Log:error(
-                    "update: no resolve selected — use `:Msvc resolve <name>` first"
-                )
-                return
-            end
-            msvc.resolve_overrides = msvc.resolve_overrides or {}
-            msvc.resolve_overrides[name] = msvc.resolve_overrides[name] or {}
-            msvc.resolve_overrides[name][prop] = value
-            Log:info(
-                "resolves[%s].%s = %s (override)",
-                name,
-                prop,
-                vim.inspect(value, { newline = "", indent = "" })
-            )
         else
             msvc.state:set(prop, value)
             Log:info(
@@ -291,9 +380,6 @@ subcommands.update = {
             for k in pairs(PROFILE_PROPS) do
                 names[#names + 1] = k
             end
-            for k in pairs(RESOLVE_PROPS) do
-                names[#names + 1] = k
-            end
             for k in pairs(STATE_PROPS) do
                 names[#names + 1] = k
             end
@@ -315,6 +401,13 @@ subcommands.update = {
             local vals = prop and PROP_VALUES[prop]
             if vals then
                 return startswith_filter(vals, arglead)
+            end
+            local provider = prop and PROP_VALUE_PROVIDERS[prop]
+            if provider then
+                local ok, dyn = pcall(provider)
+                if ok and type(dyn) == "table" then
+                    return startswith_filter(dyn, arglead)
+                end
             end
         end
         return {}
@@ -360,9 +453,9 @@ subcommands.health = {
     end,
 }
 
--- Guards for build/compile/generate. Each command requires a different
--- subset of the (profile, resolve) selection — log a clear error and
--- return false when the prerequisite is missing.
+-- Guard for build/compile. These require only an active profile;
+-- the merged profile (or `profiles.default`) supplies all dev-env
+-- parameters needed by `Msvc:resolve`.
 local function require_profile()
     if not msvc.state:profile_name() then
         Log:error("no profile selected — use `:Msvc profile <name>`")
@@ -371,43 +464,21 @@ local function require_profile()
     return true
 end
 
-local function require_resolve()
-    if not msvc.state:resolve_name() then
-        Log:error("no resolve selected — use `:Msvc resolve <name>`")
-        return false
-    end
-    return true
-end
-
--- Ported from msbuilder.lua :MSCompile / :MSGenerate. The singleton does
--- not yet implement these methods; surface them as known subcommands so
--- the dispatcher exposes the full surface area and logs a clear warning
--- instead of dying with `unknown subcommand`. They become live as soon
--- as `Msvc:compile_current_file` / `Msvc:generate_compile_commands` land.
+-- Ported from msbuilder.lua :MSCompile. The singleton does not yet
+-- implement this method; surface it as a known subcommand so the
+-- dispatcher exposes the full surface area and logs a clear warning
+-- instead of dying with `unknown subcommand`. It becomes live as soon
+-- as `Msvc:compile_current_file` lands.
 subcommands.compile = {
     desc = "Compile the current buffer's source file (not yet wired)",
     impl = function()
-        if not require_resolve() then
+        if not require_profile() then
             return
         end
         if type(msvc.compile_current_file) == "function" then
             msvc:compile_current_file()
         else
             Log:warn("compile: not yet implemented on the singleton")
-        end
-    end,
-}
-
-subcommands.generate = {
-    desc = "Generate compile_commands.json (not yet wired)",
-    impl = function()
-        if not require_resolve() then
-            return
-        end
-        if type(msvc.generate_compile_commands) == "function" then
-            msvc:generate_compile_commands()
-        else
-            Log:warn("generate: not yet implemented on the singleton")
         end
     end,
 }

@@ -6,7 +6,6 @@ local ALLOWED_FIELDS = {
     solution = true,
     project = true,
     profile = true,
-    resolve = true,
     install_path = true,
     arch = true,
 }
@@ -16,7 +15,6 @@ local function default_fields()
         solution = nil,
         project = nil,
         profile = nil,
-        resolve = nil,
         install_path = nil,
         arch = "x64",
     }
@@ -26,7 +24,6 @@ end
 ---@field solution string|nil
 ---@field project string|nil
 ---@field profile string|nil
----@field resolve string|nil
 ---@field install_path string|nil
 ---@field arch string
 local MsvcState = {}
@@ -56,7 +53,6 @@ function MsvcState:get_snapshot()
         solution = self.solution,
         project = self.project,
         profile = self.profile,
-        resolve = self.resolve,
         install_path = self.install_path,
         arch = self.arch,
     }
@@ -117,15 +113,6 @@ end
 function MsvcState:profile_name()
     if self.profile and self.profile ~= "" then
         return self.profile
-    end
-    return nil
-end
-
---- Return the active resolve name (or nil if not selected).
----@return string|nil
-function MsvcState:resolve_name()
-    if self.resolve and self.resolve ~= "" then
-        return self.resolve
     end
     return nil
 end

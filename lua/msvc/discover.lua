@@ -339,16 +339,15 @@ function M.parse_solution_projects(sln_path)
     end
     local sln_dir = Util.dirname(sln_path)
     local seen = {}
-    local pat = "Project%(\"({[^}]+})\"%)%s*=%s*\"([^\"]+)\"%s*,%s*\"([^\"]+)\"%s*,%s*\"({[^}]+})\""
+    local pat =
+        "Project%(\"({[^}]+})\"%)%s*=%s*\"([^\"]+)\"%s*,%s*\"([^\"]+)\"%s*,%s*\"({[^}]+})\""
     for _type_guid, name, rel, proj_guid in data:gmatch(pat) do
         local lower_rel = rel:lower()
         if lower_rel:sub(-8) == ".vcxproj" then
-            local abs = Util.normalize_path(Util.join_path(sln_dir, rel))
-                or rel
+            local abs = Util.normalize_path(Util.join_path(sln_dir, rel)) or rel
             if not seen[abs] then
                 seen[abs] = true
-                out[#out + 1] =
-                    { name = name, path = abs, guid = proj_guid }
+                out[#out + 1] = { name = name, path = abs, guid = proj_guid }
             end
         end
     end
@@ -357,7 +356,6 @@ function M.parse_solution_projects(sln_path)
     end)
     return out
 end
-
 
 --- Tolerant: returns {} when the file is missing or unreadable.
 --- @param vcxproj_path string
@@ -435,7 +433,8 @@ function M.find_all_buildables(root_dir, opts)
             out[#out + 1] = n
         end
     end
-    local projs = M.find_vcxprojs(root, { max_files = opts.max_vcxprojs or 500 })
+    local projs =
+        M.find_vcxprojs(root, { max_files = opts.max_vcxprojs or 500 })
     for _, p in ipairs(projs) do
         local n = Util.normalize_path(p)
         if n and not seen[n] then

@@ -195,7 +195,11 @@ end
 --- @param line string
 function MsvcLog:_live_append(line)
     local state = self._live_tail
-    if not state or not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
+    if
+        not state
+        or not state.buf
+        or not vim.api.nvim_buf_is_valid(state.buf)
+    then
         return
     end
     local buf = state.buf
@@ -237,11 +241,7 @@ function MsvcLog:install_live_tail()
         [Ext.event_names.BUILD_START] = function()
             vim.schedule(function()
                 local buf = self:_ensure_live_buf()
-                vim.api.nvim_set_option_value(
-                    "modifiable",
-                    true,
-                    { buf = buf }
-                )
+                vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
                 vim.api.nvim_buf_set_lines(
                     buf,
                     0,
@@ -262,10 +262,7 @@ function MsvcLog:install_live_tail()
         end,
         [Ext.event_names.BUILD_DONE] = function(_, ok, ms)
             self:_live_append(
-                ("-- build %s in %d ms --"):format(
-                    ok and "OK" or "FAILED",
-                    ms
-                )
+                ("-- build %s in %d ms --"):format(ok and "OK" or "FAILED", ms)
             )
         end,
         [Ext.event_names.BUILD_CANCEL] = function()

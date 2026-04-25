@@ -47,13 +47,17 @@ autocmds and re-merges the config layer-on-layer. Both `msvc:setup(opts)` and
 ==============================================================================
 4. CONFIGURATION                                          *msvc-configuration*
 
-The default config has four layer kinds:
+The default config has two top-level kinds:
 
     settings    Plugin-global settings.
-    default     Defaults inherited by every profile *and* every resolve.
-    resolves    Named developer-env entries; pick one with `:Msvc resolve`.
-    [name]      A named profile that overlays `default`; pick one with
-                `:Msvc profile`.
+    profiles    Map of profile name → profile entry.
+
+`profiles.default` is the baseline merged into every named profile,
+so it's where shared dev-env / MSBuild settings go. Each named profile
+holds the full flat field set: MSBuild parameters (configuration,
+platform, target, msbuild_args, jobs, ...) and dev-env parameters
+(arch, host_arch, vcvars_ver, winsdk, vs_*, vswhere_path, ...) live
+side by side on the same table.
 
 Default schema (from `lua/msvc/config.lua`):
 >lua
@@ -76,82 +80,68 @@ Default schema (from `lua/msvc/config.lua`):
         on_build_done   = nil,
         on_build_cancel = nil,
       },
-      default = {
-        vs_version       = "latest",
-        vs_prerelease    = false,
-        vs_products = {
-          "Microsoft.VisualStudio.Product.Community",
-          "Microsoft.VisualStudio.Product.Professional",
-          "Microsoft.VisualStudio.Product.Enterprise",
-          "Microsoft.VisualStudio.Product.BuildTools",
-        },
-        vs_requires = {
-          "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        },
-        vswhere_path     = nil,
-        arch             = "x64",
-        host_arch        = "x64",
-        msbuild_args     = { "/nologo", "/v:minimal" },
-        jobs             = 0,
-      },
-
-      -- Named resolves: pick one via `:Msvc resolve <name>`. Each entry
-      -- holds the parameters forwarded to VsDevCmd.bat / vcvarsall.bat
-      -- and to vswhere when locating the VS install.
-      resolves = {
-        dev = {
-          arch       = "x64",
-          host_arch  = "x64",
+      profiles = {
+        default = {
+          vs_version       = "latest",
+          vs_prerelease    = false,
+          vs_products = {
+            "Microsoft.VisualStudio.Product.Community",
+            "Microsoft.VisualStudio.Product.Professional",
+            "Microsoft.VisualStudio.Product.Enterprise",
+            "Microsoft.VisualStudio.Product.BuildTools",
+          },
+          vs_requires = {
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+          },
+          vswhere_path     = nil,
+          arch             = "x64",
+          host_arch        = "x64",
+          msbuild_args     = { "/nologo", "/v:minimal" },
+          jobs             = 0,
           -- vcvars_ver = "14.39",     -- pin a specific toolset (optional)
+          -- winsdk = "10.0.22621.0",  -- pin a Windows SDK version (optional)
+          -- vcvars_spectre_libs = "spectre",
         },
-        arm64_dev = {
-          arch       = "arm64",
-          host_arch  = "x64",
-        },
-        buildtools = {
-          vs_products = { "Microsoft.VisualStudio.Product.BuildTools" },
-          arch        = "x64",
-        },
-      },
 
-      -- Named profiles: pick one via `:Msvc profile <name>`. Any top-level
-      -- key that is not `settings`, `default`, or `resolves` is treated
-      -- as a profile name. Profile entries hold MSBuild parameters.
-      debug_x64 = {
-        configuration = "Debug",
-        platform      = "x64",
-        jobs          = 0,
-      },
-      release_x64 = {
-        configuration = "Release",
-        platform      = "x64",
-        msbuild_args  = { "/nologo", "/v:minimal",
-                          "/p:RunCodeAnalysis=false" },
-      },
-      arm64_release = {
-        configuration = "Release",
-        platform      = "ARM64",
+        debug_x64 = {
+          configuration = "Debug",
+          platform      = "x64",
+          jobs          = 0,
+        },
+        release_x64 = {
+          configuration = "Release",
+          platform      = "x64",
+          msbuild_args  = { "/nologo", "/v:minimal",
+                            "/p:RunCodeAnalysis=false" },
+          vcvars_ver    = "14.39",
+        },
+        arm64_release = {
+          configuration = "Release",
+          platform      = "ARM64",
+          arch          = "arm64",
+          host_arch     = "x64",
+        },
       },
     })
 <
 
-Activate a profile before building. `:Msvc compile` / `:Msvc generate`
-additionally need an active resolve:
+Activate a profile before building. The profile supplies the dev env
+to `:Msvc compile` (and to `:Msvc build` when
+`settings.use_dev_env = true`):
 >vim
     :Msvc profile debug_x64
     :Msvc build
-    :Msvc resolve dev
-    :Msvc generate
+    :Msvc compile
 <
 
 On the first `setup()` call the alphabetically-first user-defined
-profile and resolve are auto-selected when nothing is active yet, so
-typical setups don't need an explicit `:Msvc profile` / `:Msvc resolve`
-to get going. `setup()` also kicks off an asynchronous `vswhere` lookup
-to populate `state.install_path` in the background — `setup()` returns
-immediately and the path is filled in by the time you trigger a build.
-Configured `install_path` values (on `default` or the active resolve)
-short-circuit the lookup.
+profile is auto-selected when nothing is active yet, so typical setups
+don't need an explicit `:Msvc profile` to get going. `setup()` also
+kicks off an asynchronous `vswhere` lookup to populate
+`state.install_path` in the background — `setup()` returns immediately
+and the path is filled in by the time you trigger a build. A
+configured `install_path` on `profiles.default` or the active profile
+short-circuits the lookup.
 
 Merging uses `vim.tbl_extend("force", ...)` and is *not* recursive; array
 values (`vs_products`, `msbuild_args`, ...) are replaced wholesale.
@@ -178,39 +168,43 @@ Subcommands:
     clean               Run MSBuild with target=Clean.
     cancel              Cancel the in-flight MSBuild invocation
                         (taskkill /T /F /PID ...).
-    status              Echo solution / project / profile / resolve /
-                        install snapshot.
+    status              Echo solution / project / install snapshot plus
+                        the active profile's full field listing.
     log                 Open the in-memory plugin log buffer.
     build_log           Open the captured MSBuild output buffer.
-    profile <name>      Set (or show) the active named profile from config.
-                        Profile entries hold MSBuild settings
-                        (configuration, platform, target, msbuild_args, ...).
-                        Required before build/rebuild/clean.
-    resolve <name>      Set (or show) the active named resolve from
-                        `config.resolves`. Resolve entries hold dev-env
-                        parameters (arch, host_arch, vcvars_ver, vs_*,
-                        vswhere_path, install_path). Required before
-                        compile/generate (and before build when
-                        `settings.use_dev_env = true`).
-    update <prop> <val> Override a single property on the active profile
-                        or resolve. The property name selects the target:
-                        profile props (configuration, platform, target,
+    profile <name>      Set (or show) the active named profile from
+                        `config.profiles`. A profile holds both MSBuild
+                        settings (configuration, platform, target,
+                        msbuild_args, ...) and dev-env parameters (arch,
+                        host_arch, vcvars_ver, winsdk,
+                        vcvars_spectre_libs, vs_*, vswhere_path,
+                        install_path) on the same flat table. Setting a
+                        profile logs the full merged field set (sorted,
+                        one `key = value` per line). Required before
+                        build/rebuild/clean/compile.
+    update <prop> <val> Override a single property on the active
+                        profile. All profile properties live on the same
+                        flat table: configuration, platform, target,
                         verbosity, msbuild_args, jobs, max_cpu_count,
-                        no_logo, extra_args) update the active profile;
-                        resolve props (arch, host_arch, vcvars_ver,
+                        no_logo, extra_args, arch, host_arch,
+                        vcvars_ver, winsdk, vcvars_spectre_libs,
                         vs_version, vs_prerelease, vs_products,
-                        vs_requires, vswhere_path) update the active
-                        resolve. `install_path` is a global runtime
-                        state value (no profile or resolve selection
-                        required) and is written directly to the active
-                        state. Booleans accept
+                        vs_requires, vswhere_path. `install_path` is a
+                        global runtime state value (no profile
+                        selection required) and is written directly to
+                        the active state. Booleans accept
                         true/false/1/0/yes/no. Tables accept
                         comma-separated values. Both arguments are
-                        tab-completed (property names + known enums).
+                        tab-completed — property names plus known enums,
+                        with dynamic enumeration for `vcvars_ver`
+                        (scans <install_path>\VC\Tools\MSVC) and
+                        `winsdk` (queries HKLM Windows Kits\Installed
+                        Roots, with a filesystem fallback).
+                        `vcvars_spectre_libs` completes to spectre /
+                        spectre_load / spectre_load_cf.
                         Overrides are transient: they live on top of the
                         configured baseline and are cleared whenever the
-                        corresponding profile / resolve is re-selected
-                        via `:Msvc profile` / `:Msvc resolve`.
+                        profile is re-selected via `:Msvc profile`.
     project [name]      Pin a single project (subset of the loaded
                         solution) so subsequent builds target only that
                         .vcxproj. Tab completion lists project names
@@ -223,8 +217,6 @@ Subcommands:
     health              Run `:checkhealth msvc`.
     compile             Compile the current buffer's source file
                         (placeholder; logs a warning until wired).
-    generate            Generate compile_commands.json (placeholder; logs
-                        a warning until wired).
     help                List every :Msvc subcommand.
 
 ==============================================================================
@@ -278,18 +270,16 @@ broken listener never blocks the bus.
         Cancel the in-flight MSBuild invocation, if any.
 
     msvc:resolve(opts?)
-        Resolve and cache the MSVC dev env from the active named resolve
-        in `config.resolves`. `opts.name` overrides the active resolve;
-        `opts.arch` overrides its arch.
+        Resolve and cache the MSVC dev env from the active profile
+        (merged over `profiles.default`). `opts.profile` overrides the
+        active profile, `opts.arch` overrides its arch.
 
     msvc:status()
-        Echo a snapshot of solution / project / profile / resolve / VS install.
+        Echo a snapshot of solution / project / VS install plus the
+        active profile's full field listing.
 
     msvc:set_profile(name)
         Switch the active named profile.
-
-    msvc:set_resolve(name)
-        Switch the active named resolve.
 
     msvc:set_project(name_or_path)
         Pin a project from the cached solution_projects (looked up by
@@ -312,15 +302,15 @@ broken listener never blocks the bus.
 vswhere.exe not found ~
 
     Either install Visual Studio 2017 Update 2+ (which bundles `vswhere`),
-    or set `default.vswhere_path` in your `setup({...})` to an explicit
-    path. The fallback search location is
+    or set `profiles.default.vswhere_path` in your `setup({...})` to an
+    explicit path. The fallback search location is
     `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`.
 
 MSBuild.exe not found ~
 
     Confirm the "Desktop development with C++" workload is installed and
     that the resolved install matches `vs_version` / `vs_products` /
-    `vs_requires`. Run `:Msvc resolve <name>` then `:Msvc status` to
+    `vs_requires`. Run `:Msvc profile <name>` then `:Msvc status` to
     inspect what was discovered, or `:Msvc log` for the full trace.
 
 Cancelled build leaves orphan cl.exe / link.exe processes ~

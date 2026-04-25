@@ -9,6 +9,7 @@
 ---@field cache_env boolean
 ---@field env_cache_path string
 ---@field last_log_path string
+---@field use_dev_env boolean
 ---@field on_build_start fun(ctx: table)|nil
 ---@field on_build_done fun(ctx: table, ok: boolean, elapsed_ms: integer)|nil
 ---@field on_build_cancel fun(ctx: table)|nil
@@ -24,39 +25,47 @@
 ---@field cache_env? boolean
 ---@field env_cache_path? string
 ---@field last_log_path? string
+---@field use_dev_env? boolean
 ---@field on_build_start? fun(ctx: table)
 ---@field on_build_done? fun(ctx: table, ok: boolean, elapsed_ms: integer)
 ---@field on_build_cancel? fun(ctx: table)
 
----@class MsvcPartialConfigItem
+---@class MsvcProfileItem
+---@field configuration? string
+---@field platform? string
+---@field target? string
+---@field verbosity? string
+---@field max_cpu_count? integer
+---@field no_logo? boolean
+---@field extra_args? string[]
+---@field msbuild_args? string[]
+---@field jobs? integer
+---@field arch? string
+---@field host_arch? string
 ---@field vs_version? string
 ---@field vs_prerelease? boolean
 ---@field vs_products? string[]
 ---@field vs_requires? string[]
 ---@field vswhere_path? string|nil
----@field arch? string
----@field host_arch? string
----@field msbuild_args? string[]
----@field jobs? integer
+---@field vcvars_ver? string
+---@field winsdk? string
+---@field vcvars_spectre_libs? string
+---@field install_path? string
 
 ---@class MsvcConfig
 ---@field settings MsvcSettings
----@field default MsvcPartialConfigItem
----@field resolves table<string, MsvcPartialConfigItem>
----@field [string] MsvcPartialConfigItem
+---@field profiles table<string, MsvcProfileItem>
 
 ---@class MsvcPartialConfig
 ---@field settings? MsvcPartialSettings
----@field default? MsvcPartialConfigItem
----@field resolves? table<string, MsvcPartialConfigItem>
----@field [string] MsvcPartialConfigItem
+---@field profiles? table<string, MsvcProfileItem>
 
 local Log = require("msvc.log")
 
 local M = {}
 
 --- Sentinel name used when no profile is active.
-M.DEFAULT_PROFILE = "__msvc_default"
+M.DEFAULT_PROFILE = "default"
 
 local VALID_VERBOSITY = {
     quiet = true,
@@ -83,16 +92,12 @@ local KNOWN_SETTINGS = {
     on_build_cancel = "function",
 }
 
-local KNOWN_DEFAULT = {
-    vs_version = "string",
-    vs_prerelease = "boolean",
-    vs_products = "table",
-    vs_requires = "table",
-    vswhere_path = "string",
-    vcvars_ver = "string",
-    arch = "string",
-    host_arch = "string",
-    install_path = "string",
+-- Fields that may appear on a profile entry. A profile carries the full
+-- merged surface area: MSBuild parameters (configuration, platform,
+-- target, msbuild_args, jobs, ...) plus the developer-env parameters
+-- (arch, host_arch, vcvars_ver, winsdk, vs_*, vswhere_path, install_path)
+-- that used to live on a separate "resolve" table. There is no nesting.
+local KNOWN_PROFILE = {
     configuration = "string",
     platform = "string",
     target = "string",
@@ -102,7 +107,21 @@ local KNOWN_DEFAULT = {
     extra_args = "table",
     msbuild_args = "table",
     jobs = "number",
+    vs_version = "string",
+    vs_prerelease = "boolean",
+    vs_products = "table",
+    vs_requires = "table",
+    vswhere_path = "string",
+    vcvars_ver = "string",
+    winsdk = "string",
+    vcvars_spectre_libs = "string",
+    arch = "string",
+    host_arch = "string",
+    install_path = "string",
 }
+
+M.KNOWN_SETTINGS = KNOWN_SETTINGS
+M.KNOWN_PROFILE = KNOWN_PROFILE
 
 --- Hard-coded defaults. A fresh table is returned on every call so callers
 --- can freely mutate the result without poisoning future invocations.
@@ -130,74 +149,80 @@ function M.get_default_config()
             on_build_done = nil,
             on_build_cancel = nil,
         },
-        default = {
-            vs_version = "latest",
-            vs_prerelease = false,
-            vs_products = {
-                "Microsoft.VisualStudio.Product.Community",
-                "Microsoft.VisualStudio.Product.Professional",
-                "Microsoft.VisualStudio.Product.Enterprise",
-                "Microsoft.VisualStudio.Product.BuildTools",
+        profiles = {
+            default = {
+                vs_version = "latest",
+                vs_prerelease = false,
+                vs_products = {
+                    "Microsoft.VisualStudio.Product.Community",
+                    "Microsoft.VisualStudio.Product.Professional",
+                    "Microsoft.VisualStudio.Product.Enterprise",
+                    "Microsoft.VisualStudio.Product.BuildTools",
+                },
+                vs_requires = {
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                },
+                vswhere_path = nil,
+                -- See settings.use_dev_env note above.
+                vcvars_ver = nil,
+                arch = "x64",
+                host_arch = "x64",
+                msbuild_args = { "/nologo", "/v:minimal" },
+                jobs = 0,
             },
-            vs_requires = {
-                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            },
-            vswhere_path = nil,
-            -- Passed to VsDevCmd.bat / vcvarsall.bat as -vcvars_ver=<value>
-            -- when set. Only effective when settings.use_dev_env = true.
-            -- A single value cannot be correct for mixed-toolset solutions;
-            -- prefer leaving use_dev_env disabled.
-            vcvars_ver = nil,
-            arch = "x64",
-            host_arch = "x64",
-            msbuild_args = { "/nologo", "/v:minimal" },
-            jobs = 0,
         },
-        resolves = {},
     }
 end
 
---- Flatten `default` ⨉ named resolve into a single table.
+--- Sorted list of named profiles excluding `default`.
 ---@param config MsvcConfig
----@param name string|nil
----@return MsvcPartialConfigItem
-function M.get_resolve(config, name)
-    local r = (config.resolves or {})[name or ""] or {}
-    return vim.tbl_extend("force", {}, config.default or {}, r)
+---@return string[]
+function M.list_profile_names(config)
+    local names = {}
+    for k in pairs((config or {}).profiles or {}) do
+        if k ~= M.DEFAULT_PROFILE then
+            names[#names + 1] = k
+        end
+    end
+    table.sort(names)
+    return names
 end
 
---- Flatten `default` ⨉ named profile into a single table.
+--- Flatten `profiles.default` ⨉ `profiles[name]` into a single table
+--- holding both MSBuild and dev-env fields.
 ---@param config MsvcConfig
 ---@param name string|nil
----@return MsvcPartialConfigItem
-function M.get_config(config, name)
+---@return MsvcProfileItem
+function M.get_profile(config, name)
     name = name or M.DEFAULT_PROFILE
-    return vim.tbl_extend("force", {}, config.default or {}, config[name] or {})
+    local profiles = (config or {}).profiles or {}
+    local default = profiles[M.DEFAULT_PROFILE] or {}
+    if name == M.DEFAULT_PROFILE then
+        return vim.tbl_extend("force", {}, default)
+    end
+    local profile = profiles[name] or {}
+    return vim.tbl_extend("force", {}, default, profile)
 end
 
 --- Shallow-merge `partial` over `latest` (or freshly-built defaults).
---- `settings`, `default`, and `resolves` are merged per-layer; any other key
---- is treated as a profile name. Never recurses — array values are replaced
---- wholesale.
+--- `settings` is merged per-key; `profiles[name]` is merged per-key
+--- so multiple `setup` calls extend rather than clobber a profile.
 ---@param partial_config MsvcPartialConfig|nil
 ---@param latest_config MsvcConfig|nil
 ---@return MsvcConfig
 function M.merge_config(partial_config, latest_config)
     partial_config = partial_config or {}
     local config = latest_config or M.get_default_config()
+    config.profiles = config.profiles or {}
     for k, v in pairs(partial_config) do
         if k == "settings" then
-            config.settings = vim.tbl_extend("force", config.settings, v)
-        elseif k == "default" then
-            config.default = vim.tbl_extend("force", config.default, v)
-        elseif k == "resolves" then
-            config.resolves = config.resolves or {}
-            for rname, rdef in pairs(v or {}) do
-                config.resolves[rname] =
-                    vim.tbl_extend("force", config.resolves[rname] or {}, rdef)
+            config.settings = vim.tbl_extend("force", config.settings, v or {})
+        elseif k == "profiles" then
+            for pname, pdef in pairs(v or {}) do
+                local prev = config.profiles[pname] or {}
+                config.profiles[pname] =
+                    vim.tbl_extend("force", prev, pdef or {})
             end
-        else
-            config[k] = vim.tbl_extend("force", config[k] or {}, v)
         end
     end
     return config
@@ -230,16 +255,17 @@ local function validate_settings(settings)
     end
     check_type("settings", settings, "table")
     for k, v in pairs(settings) do
-        local expected = KNOWN_SETTINGS[k] or KNOWN_DEFAULT[k]
+        local expected = KNOWN_SETTINGS[k]
         if expected == nil then
+            if KNOWN_PROFILE[k] then
+                error(
+                    ("msvc.config: %q belongs in `profiles.default`, not `settings`"):format(
+                        tostring(k)
+                    ),
+                    2
+                )
+            end
             Log:warn("config: unknown settings key %q", tostring(k))
-        elseif KNOWN_SETTINGS[k] == nil then
-            error(
-                ("msvc.config: %q belongs in `default`, not `settings`"):format(
-                    tostring(k)
-                ),
-                2
-            )
         elseif v ~= nil then
             local got = type(v)
             if expected == "function" then
@@ -278,16 +304,20 @@ end
 local function validate_profile(label, profile)
     check_type(label, profile, "table")
     for k, v in pairs(profile) do
-        local expected = KNOWN_DEFAULT[k]
+        local expected = KNOWN_PROFILE[k]
         if expected == nil then
             Log:warn("config: unknown %s key %q", label, tostring(k))
         elseif v ~= nil then
             local got = type(v)
-            if expected == "string" and k == "vswhere_path" then
+            if
+                expected == "string"
+                and (k == "vswhere_path" or k == "install_path")
+            then
                 if got ~= "string" and got ~= "nil" then
                     error(
-                        ("msvc.config: %s.vswhere_path must be a string, got %s"):format(
+                        ("msvc.config: %s.%s must be a string, got %s"):format(
                             label,
+                            k,
                             got
                         ),
                         2
@@ -341,36 +371,46 @@ end
 function M.validate(config)
     check_type("config", config, "table")
     validate_settings(config.settings)
-    if config.default ~= nil then
-        validate_profile("default", config.default)
-    end
-    if config.resolves ~= nil then
-        check_type("resolves", config.resolves, "table")
-        for k, v in pairs(config.resolves) do
-            if type(k) ~= "string" then
-                error(
-                    ("msvc.config: resolve names must be strings, got %s"):format(
-                        type(k)
-                    ),
-                    2
-                )
-            end
-            validate_profile("resolves." .. k, v)
-        end
-    end
-    for k, v in pairs(config) do
-        if k ~= "settings" and k ~= "default" and k ~= "resolves" then
-            if type(k) ~= "string" then
+    if config.profiles ~= nil then
+        check_type("profiles", config.profiles, "table")
+        for pname, pdef in pairs(config.profiles) do
+            if type(pname) ~= "string" then
                 error(
                     ("msvc.config: profile names must be strings, got %s"):format(
-                        type(k)
+                        type(pname)
                     ),
                     2
                 )
             end
-            validate_profile(k, v)
+            validate_profile("profiles." .. pname, pdef)
         end
     end
+end
+
+--- Format a profile entry as a sorted multi-line description suitable
+--- for verbose logging. The first line is `header`; each subsequent
+--- line is `  <key> = <value>` with values formatted via `vim.inspect`
+--- (single-line).
+---@param header string
+---@param entry table
+---@return string[]
+function M.format_entry_lines(header, entry)
+    local lines = { header }
+    if type(entry) ~= "table" then
+        return lines
+    end
+    local keys = {}
+    for k, v in pairs(entry) do
+        if v ~= nil then
+            keys[#keys + 1] = k
+        end
+    end
+    table.sort(keys)
+    for _, k in ipairs(keys) do
+        local rendered = vim.inspect(entry[k], { newline = "", indent = "" })
+        lines[#lines + 1] = ("  %s = %s"):format(k, rendered)
+    end
+    return lines
 end
 
 return M
