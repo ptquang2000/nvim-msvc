@@ -35,7 +35,6 @@ describe("msvc.compile_commands", function()
             "Debug",
             "-a",
             "x64",
-            "--use-dev-env",
             "-o",
             "C:/out/compile_commands.json",
             "--merge",
@@ -64,14 +63,13 @@ describe("msvc.compile_commands", function()
             "Release",
             "-a",
             "x64",
-            "--use-dev-env",
             "-o",
             "out.json",
             "--validate",
         }, argv)
     end)
 
-    it("build_argv always emits --use-dev-env and --msbuild-path when supplied", function()
+    it("build_argv emits --vs-path when supplied and omits dev-env / msbuild-path", function()
         local CC = require("msvc.compile_commands")
         local argv = CC._internal.build_argv({
             extractor = "msbuild-extractor-sample",
@@ -80,7 +78,7 @@ describe("msvc.compile_commands", function()
             configuration = "Debug",
             platform = "x64",
             outpath = "out.json",
-            msbuild_path = "C:/VS/2022/Pro/MSBuild/Current/Bin/MSBuild.exe",
+            vs_path = "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
         })
         assert.same({
             "msbuild-extractor-sample",
@@ -90,9 +88,8 @@ describe("msvc.compile_commands", function()
             "Debug",
             "-a",
             "x64",
-            "--use-dev-env",
-            "--msbuild-path",
-            "C:/VS/2022/Pro/MSBuild/Current/Bin/MSBuild.exe",
+            "--vs-path",
+            "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
             "-o",
             "out.json",
             "--merge",
@@ -100,7 +97,7 @@ describe("msvc.compile_commands", function()
         }, argv)
     end)
 
-    it("build_argv emits --use-dev-env even when no msbuild_path is supplied", function()
+    it("build_argv omits --vs-path when not supplied and never emits --use-dev-env / --msbuild-path", function()
         local CC = require("msvc.compile_commands")
         local argv = CC._internal.build_argv({
             extractor = "msbuild-extractor-sample",
@@ -110,17 +107,11 @@ describe("msvc.compile_commands", function()
             platform = "x64",
             outpath = "out.json",
         })
-        -- Regardless of any deprecated setting, the extractor invocation
-        -- always carries --use-dev-env so the dev-prompt env we forward
-        -- via vim.system is consumed by MSBuildLocator.
-        local seen_use_dev_env = false
         for _, a in ipairs(argv) do
-            if a == "--use-dev-env" then
-                seen_use_dev_env = true
-                break
-            end
+            assert.is_not.equal("--use-dev-env", a)
+            assert.is_not.equal("--msbuild-path", a)
+            assert.is_not.equal("--vs-path", a)
         end
-        assert.is_true(seen_use_dev_env)
     end)
 
     it("generate forwards active project and extra_projects to argv (deduplicated)", function()

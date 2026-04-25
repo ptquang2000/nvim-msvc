@@ -14,7 +14,6 @@
 local Util = require("msvc.util")
 local Log = require("msvc.log")
 local Discover = require("msvc.discover")
-local DevEnv = require("msvc.devenv")
 
 local M = {}
 
@@ -182,18 +181,15 @@ local function build_argv(opts)
         argv[#argv + 1] = "-a"
         argv[#argv + 1] = opts.platform
     end
-    -- The dev-prompt env vars (VSINSTALLDIR, INCLUDE, PATH, ...) are
-    -- always forwarded to the extractor via vim.system. `--use-dev-env`
-    -- tells the extractor to consume them in lieu of MSBuildLocator's
-    -- .NET SDK probe — which is the failure mode that produced the
-    -- upstream "No .NET SDKs were found" / CLR exception 0xE0434352.
-    argv[#argv + 1] = "--use-dev-env"
-    -- Force out-of-process mode against the MSBuild we already located
-    -- under VSINSTALLDIR. This avoids loading MSBuild assemblies into the
-    -- extractor process for the actual extraction step.
-    if opts.msbuild_path and opts.msbuild_path ~= "" then
-        argv[#argv + 1] = "--msbuild-path"
-        argv[#argv + 1] = opts.msbuild_path
+    -- Point the extractor at the resolved VS installation root so its
+    -- internal MSBuildLocator picks the matching MSBuild + toolset
+    -- (e.g. VS 2017 Pro) instead of falling back to its default vswhere
+    -- "latest" lookup. The dev-prompt env (VSINSTALLDIR / INCLUDE / PATH
+    -- / ...) is still forwarded via `vim.system` so MSBuild's own
+    -- evaluation sees the right toolchain.
+    if opts.vs_path and opts.vs_path ~= "" then
+        argv[#argv + 1] = "--vs-path"
+        argv[#argv + 1] = opts.vs_path
     end
     argv[#argv + 1] = "-o"
     argv[#argv + 1] = opts.outpath
@@ -235,6 +231,10 @@ end
 ---                          -- inherit so MSBuild / .NET SDK lookups succeed
 ---                          -- even when nvim was launched outside a VS
 ---                          -- Developer PowerShell.
+---     @field vs_path string|nil -- VS installation root forwarded to the
+---                          -- extractor as `--vs-path` so it loads the
+---                          -- matching MSBuild + toolset (e.g. VS 2017 Pro)
+---                          -- instead of running its own vswhere lookup.
 ---     @field on_done fun(ok: boolean, outpath: string|nil, code: integer|nil)|nil
 ---@return boolean spawned
 function M.generate(opts)
@@ -302,21 +302,14 @@ function M.generate(opts)
         end
         return false
     end
-    -- Hand off to the extractor's own dev-prompt reader (--use-dev-env)
-    -- and locate MSBuild.exe so it can run out-of-process. Both rely on
-    -- the env (`opts.env`) the plugin forwards via vim.system; without
-    -- that env the extractor would fall back to MSBuildLocator's .NET
-    -- SDK discovery and crash when no SDK is installed. The caller is
-    -- responsible for resolving the developer-prompt env before calling
-    -- generate so we always emit `--use-dev-env` and a `--msbuild-path`
-    -- when one can be located under VSINSTALLDIR.
-    local env = opts.env
-    local msbuild_path
-    if type(env) == "table" then
-        local ok_mb, found = pcall(DevEnv.find_msbuild, env)
-        if ok_mb and type(found) == "string" and found ~= "" then
-            msbuild_path = found
-        end
+    -- Pin the extractor to the VS install we resolved (`state.install_path`)
+    -- so it loads the matching MSBuild + toolset rather than running its
+    -- own vswhere "latest" lookup. The dev-prompt env we forward via
+    -- vim.system populates VSINSTALLDIR / INCLUDE / PATH for the actual
+    -- MSBuild evaluation.
+    local vs_path
+    if type(opts.vs_path) == "string" and opts.vs_path ~= "" then
+        vs_path = opts.vs_path
     end
     local argv = build_argv({
         extractor = exe,
@@ -328,7 +321,7 @@ function M.generate(opts)
         merge = cc.merge,
         deduplicate = cc.deduplicate,
         extra_args = cc.extra_args,
-        msbuild_path = msbuild_path,
+        vs_path = vs_path,
     })
 
     Log:info(
@@ -337,6 +330,18 @@ function M.generate(opts)
         #projects
     )
     Log:debug("compile_commands: argv = %s", vim.inspect(argv))
+
+    -- Remove any stale compile_commands.json before invoking the
+    -- extractor so each build produces a fresh file. Without this, files
+    -- removed from the build (or projects unloaded from the solution)
+    -- would linger in the previous output. The extractor itself
+    -- overwrites on success, but we delete eagerly so a failed run
+    -- leaves no misleading stale data behind either.
+    if vim.uv and vim.uv.fs_unlink then
+        pcall(vim.uv.fs_unlink, outpath)
+    elseif vim.loop and vim.loop.fs_unlink then
+        pcall(vim.loop.fs_unlink, outpath)
+    end
 
     local on_done = opts.on_done
     -- Inherit the resolved MSVC developer environment so the extractor's

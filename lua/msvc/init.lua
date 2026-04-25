@@ -165,6 +165,7 @@ function Msvc:_install_compile_commands_listener()
                 configuration = ctx.configuration,
                 platform = ctx.platform,
                 env = env,
+                vs_path = self_.state.install_path,
                 cc = cc,
             })
         end,
