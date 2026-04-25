@@ -140,9 +140,19 @@ local KNOWN_PROFILE = {
     install_path = "string",
 }
 
+-- Keys accepted at the top level of `setup({ ... })`. Anything outside
+-- this set is a misplacement (typically a settings.* key written one
+-- level too high) and is logged as a warning so it is not silently
+-- dropped during merge.
+local KNOWN_TOP_LEVEL = {
+    settings = true,
+    profiles = true,
+}
+
 M.KNOWN_SETTINGS = KNOWN_SETTINGS
 M.KNOWN_PROFILE = KNOWN_PROFILE
 M.KNOWN_COMPILE_COMMANDS = KNOWN_COMPILE_COMMANDS
+M.KNOWN_TOP_LEVEL = KNOWN_TOP_LEVEL
 
 --- Hard-coded defaults. A fresh table is returned on every call so callers
 --- can freely mutate the result without poisoning future invocations.
@@ -241,6 +251,32 @@ function M.merge_config(partial_config, latest_config)
     partial_config = partial_config or {}
     local config = latest_config or M.get_default_config()
     config.profiles = config.profiles or {}
+    -- Surface misplaced top-level keys early. The most common mistake is
+    -- writing a `settings.*` key (e.g. `compile_commands`) at the top
+    -- level of `setup({ ... })`, where `merge_config` would otherwise
+    -- silently drop it. Hint at the right location when we can.
+    for k, _ in pairs(partial_config) do
+        if not KNOWN_TOP_LEVEL[k] then
+            if KNOWN_SETTINGS[k] then
+                Log:warn(
+                    "config: top-level key %q belongs in `settings.%s` — value ignored",
+                    tostring(k),
+                    tostring(k)
+                )
+            elseif KNOWN_PROFILE[k] then
+                Log:warn(
+                    "config: top-level key %q belongs in `profiles.default.%s` — value ignored",
+                    tostring(k),
+                    tostring(k)
+                )
+            else
+                Log:warn(
+                    "config: unknown top-level setup key %q — value ignored",
+                    tostring(k)
+                )
+            end
+        end
+    end
     for k, v in pairs(partial_config) do
         if k == "settings" then
             local cur = config.settings or {}

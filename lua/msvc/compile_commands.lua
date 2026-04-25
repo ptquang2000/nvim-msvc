@@ -221,7 +221,13 @@ end
 --- exits (best-effort, scheduled on the main loop).
 ---@param opts table
 ---     @field solution string|nil
----     @field project string|nil
+---     @field project string|nil       -- active project (.vcxproj)
+---     @field extra_projects string[]|nil -- additional projects to pass
+---                                        -- as --project (e.g. all
+---                                        -- projects parsed from the
+---                                        -- solution). Deduplicated
+---                                        -- against `project` and the
+---                                        -- builddir-discovered list.
 ---     @field configuration string
 ---     @field platform string
 ---     @field cc table -- settings.compile_commands
@@ -252,17 +258,37 @@ function M.generate(opts)
         return false
     end
     local projects = collect_builddir_vcxprojs(cc.builddir, solution, project)
-    -- When we don't have a solution we still need at least one --project
-    -- input; fall back to the active project so the extractor has work
-    -- to do.
-    if (not solution or solution == "") and project and project ~= "" then
-        local seen = {}
-        for _, p in ipairs(projects) do
-            seen[(Util.normalize_path(p) or p):lower()] = true
+    local seen = {}
+    for _, p in ipairs(projects) do
+        seen[(Util.normalize_path(p) or p):lower()] = true
+    end
+    local function add_project(p)
+        if type(p) ~= "string" or p == "" then
+            return
         end
-        local norm = Util.normalize_path(project) or project
-        if not seen[norm:lower()] then
-            table.insert(projects, 1, norm)
+        if not p:lower():match("%.vcxproj$") then
+            return
+        end
+        local norm = Util.normalize_path(p) or p
+        local key = norm:lower()
+        if seen[key] then
+            return
+        end
+        seen[key] = true
+        projects[#projects + 1] = norm
+    end
+    -- Always include the active project. The extractor's solution-mode
+    -- pass yields very few flags for some project types (notably WDK
+    -- kernel-mode driver projects), so we extract the active project
+    -- separately too and let `--deduplicate` keep the richer entry.
+    add_project(project)
+    -- Include every project parsed from the solution. This makes the
+    -- extractor produce a per-project compile_commands entry for each
+    -- one in addition to the solution-level pass, again merged via
+    -- `--deduplicate`. Callers without a parsed solution list pass nil.
+    if type(opts.extra_projects) == "table" then
+        for _, p in ipairs(opts.extra_projects) do
+            add_project(p)
         end
     end
     local exe = M.find_extractor()

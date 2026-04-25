@@ -69,6 +69,33 @@ describe("msvc.config", function()
         assert.equals("14.16", r2.vcvars_ver)
     end)
 
+    it("merge_config warns on misplaced top-level keys", function()
+        local Config = require("msvc.config")
+        local notify = TestUtils.capture_notify()
+        local cfg = Config.merge_config({
+            -- Belongs in `settings.compile_commands`.
+            compile_commands = { outdir = "bin" },
+            -- Belongs in `profiles.default.arch`.
+            arch = "x64",
+            -- Truly unknown.
+            wibble = true,
+        })
+        notify.restore()
+        -- Misplaced keys are dropped, not silently merged.
+        assert.is_nil(cfg.compile_commands)
+        assert.is_nil(cfg.arch)
+        assert.is_nil(cfg.wibble)
+        local joined = ""
+        for _, c in ipairs(notify.calls) do
+            joined = joined .. (c.msg or "") .. "\n"
+        end
+        assert.is_truthy(joined:find("compile_commands", 1, true))
+        assert.is_truthy(joined:find("settings.compile_commands", 1, true))
+        assert.is_truthy(joined:find("arch", 1, true))
+        assert.is_truthy(joined:find("profiles.default.arch", 1, true))
+        assert.is_truthy(joined:find("wibble", 1, true))
+    end)
+
     it("list_profile_names excludes default", function()
         local Config = require("msvc.config")
         local cfg = Config.merge_config({

@@ -147,9 +147,21 @@ function Msvc:_install_compile_commands_listener()
                 env = self_:resolve({ profile = self_.state:profile_name() })
                     or env
             end
+            -- Pass every project parsed from the solution as an extra
+            -- --project input. The extractor's solution-mode pass alone
+            -- yields very few flags for some project types (notably WDK
+            -- kernel-mode driver projects); the per-project pass +
+            -- `--deduplicate` recovers the richer command for IntelliSense.
+            local extra_projects = {}
+            for _, p in ipairs(self_.solution_projects or {}) do
+                if type(p) == "table" and type(p.path) == "string" then
+                    extra_projects[#extra_projects + 1] = p.path
+                end
+            end
             CompileCommands.generate({
                 solution = solution,
                 project = project,
+                extra_projects = extra_projects,
                 configuration = ctx.configuration,
                 platform = ctx.platform,
                 env = env,
@@ -476,14 +488,22 @@ function Msvc:set_project(name_or_path)
     return true
 end
 
---- Log a snapshot of the active solution / project / profile / install.
---- The profile section is expanded with its full field set (sorted, one
---- key per line) for verbose introspection.
+--- Log a snapshot of the active solution / project / profile / install,
+--- plus the `compile_commands` settings the post-build extractor will
+--- consume. The profile section is expanded with its full field set
+--- (sorted, one key per line) for verbose introspection.
 function Msvc:status()
     local s = self.state:get_snapshot()
     Log:info("solution = %s", tostring(s.solution or "<none>"))
     Log:info("project  = %s", tostring(s.project or "<none>"))
     Log:info("install  = %s", tostring(s.install_path or "<none>"))
+    local cc = self.config and self.config.settings and self.config.settings.compile_commands
+    if type(cc) == "table" then
+        local cc_lines = Config.format_entry_lines("compile_commands", cc)
+        for _, line in ipairs(cc_lines) do
+            Log:info("%s", line)
+        end
+    end
     local profile_name = self.state:profile_name()
     if profile_name then
         self:log_profile(profile_name)

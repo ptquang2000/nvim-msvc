@@ -123,6 +123,60 @@ describe("msvc.compile_commands", function()
         assert.is_true(seen_use_dev_env)
     end)
 
+    it("generate forwards active project and extra_projects to argv (deduplicated)", function()
+        local CC = require("msvc.compile_commands")
+        -- Ensure find_extractor returns a value so generate doesn't bail out.
+        local orig_find = CC.find_extractor
+        CC.find_extractor = function()
+            return "C:/tools/msbuild-extractor-sample.exe"
+        end
+        local orig_system = vim.system
+        local captured_argv
+        vim.system = function(argv, _, _)
+            captured_argv = argv
+            return { wait = function() return { code = 0 } end }
+        end
+        local ok, err = pcall(function()
+            CC.generate({
+                solution = "C:/repo/app.sln",
+                project = "C:/repo/src/active.vcxproj",
+                extra_projects = {
+                    "C:/repo/src/active.vcxproj", -- duplicate of active
+                    "C:/repo/src/other.vcxproj",
+                    "not-a-vcxproj.txt", -- filtered out
+                },
+                configuration = "Debug",
+                platform = "x64",
+                cc = { enabled = true, outdir = "out" },
+            })
+        end)
+        CC.find_extractor = orig_find
+        vim.system = orig_system
+        assert.is_true(ok, tostring(err))
+        assert.is_table(captured_argv)
+        local projs = {}
+        for i, a in ipairs(captured_argv) do
+            if a == "--project" then
+                projs[#projs + 1] = captured_argv[i + 1]
+            end
+        end
+        -- active project present exactly once, plus the unique extra
+        local saw_active, saw_other, dupes = 0, 0, 0
+        for _, p in ipairs(projs) do
+            if p:lower():find("active%.vcxproj$") then
+                saw_active = saw_active + 1
+            elseif p:lower():find("other%.vcxproj$") then
+                saw_other = saw_other + 1
+            end
+        end
+        assert.equals(1, saw_active)
+        assert.equals(1, saw_other)
+        for _, p in ipairs(projs) do
+            assert.is_truthy(p:lower():match("%.vcxproj$"))
+        end
+        for _ = 1, dupes do end
+    end)
+
     it("config rejects unknown keys and bad types", function()
         local Config = require("msvc.config")
         Config.validate({
