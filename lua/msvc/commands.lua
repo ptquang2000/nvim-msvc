@@ -440,8 +440,8 @@ subcommands.discover = {
 }
 
 -- Guard for build/compile. These require only an active profile;
--- the merged profile (or `profiles.default`) supplies all dev-env
--- parameters needed by `Msvc:resolve`.
+-- the merged profile view (engine defaults ⨉ root profile ⨉ named
+-- profile) supplies all dev-env parameters needed by `Msvc:resolve`.
 local function require_profile()
     if not msvc.state:profile_name() then
         Log:error("no profile selected — use `:Msvc profile <name>`")

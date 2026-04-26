@@ -75,8 +75,26 @@ local Log = require("msvc.log")
 
 local M = {}
 
---- Sentinel name used when no profile is active.
-M.DEFAULT_PROFILE = "default"
+-- Engine-level fallback values applied at the bottom of every profile
+-- view. Users layer their own root profile (named via
+-- `settings.default_profile`) on top, then named profiles on top of that.
+-- Kept private — not exposed as a `profiles.<name>` entry — so users
+-- can't accidentally activate it as a target profile.
+local INTERNAL_DEFAULTS = {
+    vs_version = "latest",
+    vs_prerelease = false,
+    vs_products = {
+        "Microsoft.VisualStudio.Product.Community",
+        "Microsoft.VisualStudio.Product.Professional",
+        "Microsoft.VisualStudio.Product.Enterprise",
+        "Microsoft.VisualStudio.Product.BuildTools",
+    },
+    vs_requires = {},
+    arch = "x64",
+    host_arch = "x64",
+    msbuild_args = { "/nologo", "/v:minimal" },
+    jobs = 0,
+}
 
 local VALID_VERBOSITY = {
     quiet = true,
@@ -159,6 +177,10 @@ M.KNOWN_TOP_LEVEL = KNOWN_TOP_LEVEL
 
 --- Hard-coded defaults. A fresh table is returned on every call so callers
 --- can freely mutate the result without poisoning future invocations.
+--- Note: `profiles` is intentionally empty — users must declare at least
+--- one profile and point `settings.default_profile` at it. Engine-level
+--- fallbacks (vs_products, arch, msbuild_args, ...) are merged
+--- internally during `get_profile`.
 ---@return MsvcConfig
 function M.get_default_config()
     return {
@@ -173,10 +195,9 @@ function M.get_default_config()
             cache_env = true,
             env_cache_path = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
             last_log_path = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
-            -- Name of the profile to activate on setup (must match a key
-            -- in `profiles` other than "default", or "default" to use it
-            -- directly). When nil, the first non-default profile in
-            -- alphabetical order is auto-selected.
+            -- Required. Names the profile that acts as both the active
+            -- profile on setup AND the root layer merged under every
+            -- other named profile. Must match a key in `profiles`.
             default_profile = nil,
             on_build_start = nil,
             on_build_done = nil,
@@ -195,35 +216,32 @@ function M.get_default_config()
                 extra_args = nil,
             },
         },
-        profiles = {
-            default = {
-                vs_version = "latest",
-                vs_prerelease = false,
-                vs_products = {
-                    "Microsoft.VisualStudio.Product.Community",
-                    "Microsoft.VisualStudio.Product.Professional",
-                    "Microsoft.VisualStudio.Product.Enterprise",
-                    "Microsoft.VisualStudio.Product.BuildTools",
-                },
-                vs_requires = {},
-                vswhere_path = nil,
-                vcvars_ver = nil,
-                arch = "x64",
-                host_arch = "x64",
-                msbuild_args = { "/nologo", "/v:minimal" },
-                jobs = 0,
-            },
-        },
+        profiles = {},
     }
 end
 
---- Sorted list of named profiles excluding `default`.
+--- Resolve the configured root profile name, or nil if not set.
+---@param config MsvcConfig|nil
+---@return string|nil
+local function root_name(config)
+    local s = config and config.settings or {}
+    local name = s.default_profile
+    if type(name) == "string" and name ~= "" then
+        return name
+    end
+    return nil
+end
+
+--- Sorted list of named profiles excluding the configured root profile
+--- (so it doesn't appear as a switch target — switching to it is a
+--- no-op since it's already the base layer).
 ---@param config MsvcConfig
 ---@return string[]
 function M.list_profile_names(config)
     local names = {}
+    local root = root_name(config)
     for k in pairs((config or {}).profiles or {}) do
-        if k ~= M.DEFAULT_PROFILE then
+        if k ~= root then
             names[#names + 1] = k
         end
     end
@@ -231,20 +249,22 @@ function M.list_profile_names(config)
     return names
 end
 
---- Flatten `profiles.default` ⨉ `profiles[name]` into a single table
---- holding both MSBuild and dev-env fields.
+--- Flatten engine defaults ⨉ root profile ⨉ named profile into a single
+--- table holding both MSBuild and dev-env fields.
 ---@param config MsvcConfig
 ---@param name string|nil
 ---@return MsvcProfileItem
 function M.get_profile(config, name)
-    name = name or M.DEFAULT_PROFILE
     local profiles = (config or {}).profiles or {}
-    local default = profiles[M.DEFAULT_PROFILE] or {}
-    if name == M.DEFAULT_PROFILE then
-        return vim.tbl_extend("force", {}, default)
+    local merged = vim.tbl_extend("force", {}, INTERNAL_DEFAULTS)
+    local root = root_name(config)
+    if root and profiles[root] then
+        merged = vim.tbl_extend("force", merged, profiles[root])
     end
-    local profile = profiles[name] or {}
-    return vim.tbl_extend("force", {}, default, profile)
+    if name and name ~= root and profiles[name] then
+        merged = vim.tbl_extend("force", merged, profiles[name])
+    end
+    return merged
 end
 
 --- Shallow-merge `partial` over `latest` (or freshly-built defaults).
@@ -271,7 +291,7 @@ function M.merge_config(partial_config, latest_config)
                 )
             elseif KNOWN_PROFILE[k] then
                 Log:warn(
-                    "config: top-level key %q belongs in `profiles.default.%s` — value ignored",
+                    "config: top-level key %q belongs on a profile entry (e.g. `profiles.<your_default_profile>.%s`) — value ignored",
                     tostring(k),
                     tostring(k)
                 )
@@ -355,7 +375,7 @@ local function validate_settings(settings)
         if expected == nil then
             if KNOWN_PROFILE[k] then
                 error(
-                    ("msvc.config: %q belongs in `profiles.default`, not `settings`"):format(
+                    ("msvc.config: %q belongs on a profile entry, not `settings`"):format(
                         tostring(k)
                     ),
                     2
@@ -505,6 +525,12 @@ end
 
 --- Validate a merged or partial config. Logs warnings for unknown keys via
 --- `MsvcLog:warn`; raises on type mismatches.
+---
+--- `settings.default_profile` is **required** and must name an existing
+--- entry in `config.profiles`. The check is skipped when neither the
+--- setting nor the profiles table has been populated yet (e.g. when
+--- validating a freshly built default config) so callers can still
+--- type-check intermediate, partial configs.
 ---@param config MsvcPartialConfig|MsvcConfig
 function M.validate(config)
     check_type("config", config, "table")
@@ -521,6 +547,18 @@ function M.validate(config)
                 )
             end
             validate_profile("profiles." .. pname, pdef)
+        end
+    end
+    local s = config.settings
+    if s ~= nil and s.default_profile ~= nil then
+        local profiles = config.profiles or {}
+        if profiles[s.default_profile] == nil then
+            error(
+                ("msvc.config: settings.default_profile=%q does not match any entry in `profiles`"):format(
+                    tostring(s.default_profile)
+                ),
+                2
+            )
         end
     end
 end

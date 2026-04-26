@@ -73,6 +73,7 @@ require("msvc").setup({
         cache_env       = true,                -- persist resolved dev env across sessions
         env_cache_path  = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
         last_log_path   = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
+        default_profile = "base",              -- REQUIRED: name of root profile (must be a key under `profiles`)
         on_build_start  = nil,                 -- fun(ctx)        — back-compat shim
         on_build_done   = nil,                 -- fun(ctx, ok, ms) — back-compat shim
         on_build_cancel = nil,                 -- fun(ctx)        — back-compat shim
@@ -99,12 +100,14 @@ require("msvc").setup({
         },
     },
 
-    -- All profiles live under `profiles`. `profiles.default` is the
-    -- baseline merged into every named profile, so it's where shared
-    -- dev-env / MSBuild settings go. Pick a named profile at runtime
-    -- with `:Msvc profile <name>`.
+    -- All profiles live under `profiles`. The profile named by
+    -- `settings.default_profile` (required) doubles as the *root*
+    -- profile: it is activated on setup AND merged underneath every
+    -- other named profile, so it's where shared dev-env / MSBuild
+    -- settings go. Pick a different named profile at runtime with
+    -- `:Msvc profile <name>`.
     profiles = {
-        default = {
+        base = {
             vs_version       = "latest",           -- vswhere -version filter ("latest"|"16"|"17"|...)
             vs_prerelease    = false,              -- include preview channel installs
             vs_products = {                        -- vswhere -products filter
@@ -128,7 +131,7 @@ require("msvc").setup({
 
         -- A named profile holds the full field set (MSBuild parameters
         -- and dev-env parameters together). Anything not declared on
-        -- the profile is inherited from `profiles.default`.
+        -- the profile is inherited from the root profile (here `base`).
         debug_x64 = {
             configuration = "Debug",               -- /p:Configuration=
             platform      = "x64",                 -- /p:Platform=
@@ -159,16 +162,15 @@ sources the dev env from the active profile:
 :Msvc compile
 ```
 
-On the first `setup()` call the active profile is selected automatically:
-when `settings.default_profile` is set to the name of a configured profile
-that one is loaded; otherwise the alphabetically-first user-defined
-profile is auto-selected. Either way, typical setups don't need an
-explicit `:Msvc profile` to get going. `setup()` also kicks off an
-asynchronous `vswhere` lookup to populate `state.install_path` in the
-background — `setup()` returns immediately and the path is filled in by
-the time you trigger a build.
-A configured `install_path` on `profiles.default` or the active
-profile short-circuits the lookup.
+`settings.default_profile` is **required** and must match a key in
+`profiles`. On the first `setup()` call, that profile is activated
+automatically — no explicit `:Msvc profile` is needed to get going.
+Other named profiles layer on top of it during build resolution.
+`setup()` also kicks off an asynchronous `vswhere` lookup to populate
+`state.install_path` in the background — `setup()` returns immediately
+and the path is filled in by the time you trigger a build.
+A configured `install_path` on the root profile (or the active named
+profile) short-circuits the lookup.
 
 Merging uses `vim.tbl_extend("force", ...)` — **never recursive**, so array values
 (`vs_products`, `msbuild_args`, …) are replaced wholesale.
@@ -302,7 +304,7 @@ Ext.extensions:add_listener({
   `Build`/`Rebuild`/`Clean`. Returns the `MsvcBuild` instance.
 - `msvc:cancel_build()` — Cancel the in-flight build, if any.
 - `msvc:resolve(opts?)` — Resolve & cache the MSVC dev env from the
-  active profile (merged over `profiles.default`); `opts.profile`
+  active profile (merged over the configured root profile); `opts.profile`
   overrides the active profile, `opts.arch` overrides the resolved arch.
 - `msvc:status()` — Echo solution/project/install snapshot plus the
   active profile's full field listing.
@@ -318,8 +320,8 @@ Ext.extensions:add_listener({
 
 Module-returns-singleton in `init.lua`; class-style modules with metatables
 for stateful pieces (`Msvc`, `MsvcLog`, `MsvcState`, `MsvcBuild`,
-`MsvcExtensions`); layered config (`settings` / `profiles.default` /
-`profiles[<name>]`) merged non-recursively with
+`MsvcExtensions`); layered config (`settings` / root profile /
+named profile) merged non-recursively with
 `vim.tbl_extend("force", …)`; named-event bus
 (`MsvcExtensions:emit`) replacing ad-hoc callbacks; one shared `:Msvc`
 dispatcher with subcommand tab-completion replacing the old per-verb
@@ -342,7 +344,7 @@ Run `./scripts/check.ps1` before sending a PR; it must exit 0.
 ## Troubleshooting
 
 - **`vswhere.exe not found`** — Either install Visual Studio 2017 Update 2+
-  (which ships `vswhere`), or set `profiles.default.vswhere_path` in
+  (which ships `vswhere`), or set `vswhere_path` on your default profile in
   `setup` to an explicit path. The fallback search location is
   `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`.
 - **`MSBuild.exe not found`** — Confirm the **Desktop development with C++**

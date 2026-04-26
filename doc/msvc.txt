@@ -52,12 +52,13 @@ The default config has two top-level kinds:
     settings    Plugin-global settings.
     profiles    Map of profile name → profile entry.
 
-`profiles.default` is the baseline merged into every named profile,
-so it's where shared dev-env / MSBuild settings go. Each named profile
-holds the full flat field set: MSBuild parameters (configuration,
-platform, target, msbuild_args, jobs, ...) and dev-env parameters
-(arch, host_arch, vcvars_ver, winsdk, vs_*, vswhere_path, ...) live
-side by side on the same table.
+The profile named by `settings.default_profile` (required) doubles as
+the *root* profile: it is activated on setup AND merged underneath
+every other named profile, so it's where shared dev-env / MSBuild
+settings go. Each named profile holds the full flat field set:
+MSBuild parameters (configuration, platform, target, msbuild_args,
+jobs, ...) and dev-env parameters (arch, host_arch, vcvars_ver,
+winsdk, vs_*, vswhere_path, ...) live side by side on the same table.
 
 Default schema (from `lua/msvc/config.lua`):
 >lua
@@ -75,12 +76,13 @@ Default schema (from `lua/msvc/config.lua`):
                           .. "/nvim-msvc-env.json",
         last_log_path   = vim.fn.stdpath("cache")
                           .. "/nvim-msvc-last.log",
+        default_profile = "base",   -- REQUIRED: name a key under `profiles`
         on_build_start  = nil,
         on_build_done   = nil,
         on_build_cancel = nil,
       },
       profiles = {
-        default = {
+        base = {
           vs_version       = "latest",
           vs_prerelease    = false,
           vs_products = {
@@ -139,16 +141,15 @@ accept absolute or relative paths; relative paths are resolved against
 the active solution's directory, then the active project's directory,
 then Neovim's cwd (in that order).
 
-On the first `setup()` call the active profile is selected automatically:
-when `settings.default_profile` is set to the name of a configured
-profile, that one is loaded; otherwise the alphabetically-first
-user-defined profile is auto-selected. Either way, typical setups
-don't need an explicit `:Msvc profile` to get going. `setup()` also
-kicks off an asynchronous `vswhere` lookup to populate
-`state.install_path` in the background — `setup()` returns immediately
-and the path is filled in by the time you trigger a build. A
-configured `install_path` on `profiles.default` or the active profile
-short-circuits the lookup.
+`settings.default_profile` is **required** and must match a key in
+`profiles`. On the first `setup()` call, that profile is activated
+automatically, so typical setups don't need an explicit `:Msvc
+profile` to get going. Other named profiles layer on top of it during
+build resolution. `setup()` also kicks off an asynchronous `vswhere`
+lookup to populate `state.install_path` in the background — `setup()`
+returns immediately and the path is filled in by the time you trigger
+a build. A configured `install_path` on the root profile (or the
+active named profile) short-circuits the lookup.
 
 Merging uses `vim.tbl_extend("force", ...)` and is *not* recursive; array
 values (`vs_products`, `msbuild_args`, ...) are replaced wholesale.
@@ -278,8 +279,8 @@ broken listener never blocks the bus.
 
     msvc:resolve(opts?)
         Resolve and cache the MSVC dev env from the active profile
-        (merged over `profiles.default`). `opts.profile` overrides the
-        active profile, `opts.arch` overrides its arch.
+        (merged over the configured root profile). `opts.profile`
+        overrides the active profile, `opts.arch` overrides its arch.
 
     msvc:status()
         Echo a snapshot of solution / project / VS install plus the
@@ -307,8 +308,8 @@ broken listener never blocks the bus.
 vswhere.exe not found ~
 
     Either install Visual Studio 2017 Update 2+ (which bundles `vswhere`),
-    or set `profiles.default.vswhere_path` in your `setup({...})` to an
-    explicit path. The fallback search location is
+    or set `vswhere_path` on your default profile in your `setup({...})`
+    to an explicit path. The fallback search location is
     `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`.
 
 MSBuild.exe not found ~

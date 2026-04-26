@@ -66,6 +66,16 @@ function Msvc:setup(partial_config)
     end
     self.config = Config.merge_config(partial_config, self.config)
     Config.validate(self.config)
+    -- `settings.default_profile` is required: it names the root profile
+    -- that is both activated on setup and merged under every named
+    -- profile during build resolution.
+    local s = self.config.settings or {}
+    if type(s.default_profile) ~= "string" or s.default_profile == "" then
+        error(
+            "msvc.setup: `settings.default_profile` is required — set it to the name of an entry in `profiles`",
+            2
+        )
+    end
     Log:set_level(
         self.config.settings.log_level
             or self.config.settings.notify_level
@@ -196,34 +206,16 @@ function Msvc:_warm_solution()
     Log:debug("warm solution: %s (%d projects)", norm, #self.solution_projects)
 end
 
---- On first setup, select the active profile. Preference order:
----   1. `settings.default_profile` if it names an existing profile.
----   2. The alphabetically-first user-defined profile (excluding the
----      `default` base entry).
---- Picking a stable order keeps behaviour deterministic across Neovim
---- restarts.
+--- On first setup, activate the configured root profile. Validation has
+--- already guaranteed `settings.default_profile` names an existing
+--- profile, so this is a deterministic, fall-back-free operation.
 function Msvc:_auto_select_defaults()
     if self.state:profile_name() then
         return
     end
-    local configured = self.config.settings and self.config.settings.default_profile
-    local profiles_tbl = (self.config or {}).profiles or {}
-    if type(configured) == "string" and configured ~= "" then
-        if profiles_tbl[configured] ~= nil then
-            self:set_profile(configured, true)
-            Log:debug("loaded configured default_profile %q", configured)
-            return
-        end
-        Log:warn(
-            "config: settings.default_profile=%q does not match any profile — falling back to auto-select",
-            configured
-        )
-    end
-    local profiles = Config.list_profile_names(self.config)
-    if profiles[1] then
-        self:set_profile(profiles[1], true)
-        Log:debug("auto-selected profile %q", profiles[1])
-    end
+    local name = self.config.settings.default_profile
+    self:set_profile(name, true)
+    Log:debug("loaded default_profile %q", name)
 end
 
 --- Kick off an asynchronous vswhere lookup so that `state.install_path`
@@ -244,40 +236,37 @@ function Msvc:_warm_install_path()
         return
     end
     local vswhere_path = profile_view.vswhere_path
-    VsWhere.list_installations_async(
-        {
-            vswhere_path = vswhere_path,
-            vs_version = profile_view.vs_version,
-            vs_prerelease = profile_view.vs_prerelease,
-            vs_products = profile_view.vs_products,
-            vs_requires = profile_view.vs_requires,
-        },
-        function(installs, err)
-            if err then
-                Log:debug("warm install_path: %s", err)
-            end
-            self.vs_installations = installs or {}
-            local inst = VsWhere.pick_latest(installs)
-            if not inst or not inst.installationPath then
-                return
-            end
-            -- Don't clobber a value the user set between the spawn and
-            -- the callback (e.g. via `:Msvc update install_path`).
-            if self.state.install_path and self.state.install_path ~= "" then
-                return
-            end
-            local install = Util.normalize_path(inst.installationPath)
-            self.state:set("install_path", install)
-            Log:debug("warm install_path resolved: %s", install)
+    VsWhere.list_installations_async({
+        vswhere_path = vswhere_path,
+        vs_version = profile_view.vs_version,
+        vs_prerelease = profile_view.vs_prerelease,
+        vs_products = profile_view.vs_products,
+        vs_requires = profile_view.vs_requires,
+    }, function(installs, err)
+        if err then
+            Log:debug("warm install_path: %s", err)
         end
-    )
+        self.vs_installations = installs or {}
+        local inst = VsWhere.pick_latest(installs)
+        if not inst or not inst.installationPath then
+            return
+        end
+        -- Don't clobber a value the user set between the spawn and
+        -- the callback (e.g. via `:Msvc update install_path`).
+        if self.state.install_path and self.state.install_path ~= "" then
+            return
+        end
+        local install = Util.normalize_path(inst.installationPath)
+        self.state:set("install_path", install)
+        Log:debug("warm install_path resolved: %s", install)
+    end)
 end
 
 --- Resolve the MSVC developer environment for the active profile. Reads
 --- parameters (arch / install_path / vcvars_ver / vs_*) from the merged
---- profile view (`profiles.default` ⨉ `profiles[name]`) plus any active
---- `:Msvc update` overrides. `opts` overrides any field from the
---- resolved entry.
+--- profile view (engine defaults ⨉ root profile ⨉ named profile) plus
+--- any active `:Msvc update` overrides. `opts` overrides any field from
+--- the resolved entry.
 --- On success returns the env table and stores `install_path` on state.
 ---@param opts table|nil
 ---@return table|nil env
@@ -538,7 +527,9 @@ function Msvc:status()
     Log:info("solution = %s", tostring(s.solution or "<none>"))
     Log:info("project  = %s", tostring(s.project or "<none>"))
     Log:info("install  = %s", tostring(s.install_path or "<none>"))
-    local cc = self.config and self.config.settings and self.config.settings.compile_commands
+    local cc = self.config
+        and self.config.settings
+        and self.config.settings.compile_commands
     if type(cc) == "table" then
         local cc_lines = Config.format_entry_lines("compile_commands", cc)
         for _, line in ipairs(cc_lines) do

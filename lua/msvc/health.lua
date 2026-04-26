@@ -164,7 +164,7 @@ local function check_toolchain(msvc)
         ok("vswhere.exe: " .. vswhere)
     else
         warn("vswhere.exe not found", {
-            "Install Visual Studio 2017 Update 2+ (ships vswhere.exe), or set `profiles.default.vswhere_path` to an explicit path.",
+            "Install Visual Studio 2017 Update 2+ (ships vswhere.exe), or set `vswhere_path` on your default profile to an explicit path.",
             "Default fallback: %ProgramFiles(x86)%\\Microsoft Visual Studio\\Installer\\vswhere.exe",
         })
     end
@@ -183,7 +183,7 @@ local function check_toolchain(msvc)
     else
         warn("no Visual Studio installation resolved yet", {
             "Install Visual Studio 2019/2022 with the *Desktop development with C++* workload.",
-            "If installed in a non-default location, set `profiles.default.install_path`.",
+            "If installed in a non-default location, set `install_path` on your default profile.",
         })
     end
 end

@@ -10,12 +10,15 @@ describe("msvc.config", function()
         local cfg = Config.get_default_config()
         assert.equals("table", type(cfg.settings))
         assert.equals("table", type(cfg.profiles))
-        assert.equals("table", type(cfg.profiles.default))
+        assert.equals(0, vim.tbl_count(cfg.profiles))
+        assert.equals(nil, cfg.settings.default_profile)
         assert.equals(vim.log.levels.INFO, cfg.settings.notify_level)
         assert.equals(true, cfg.settings.open_quickfix)
-        assert.equals("x64", cfg.profiles.default.arch)
-        assert.equals(nil, cfg.profiles.default.configuration)
-        assert.equals("table", type(cfg.profiles.default.msbuild_args))
+        -- Engine fallbacks now live internally and surface via get_profile.
+        local p = Config.get_profile(cfg, nil)
+        assert.equals("x64", p.arch)
+        assert.equals("table", type(p.msbuild_args))
+        assert.equals(nil, p.configuration)
     end)
 
     it(
@@ -23,29 +26,35 @@ describe("msvc.config", function()
         function()
             local Config = require("msvc.config")
             local cfg = Config.merge_config({
-                settings = { qf_height = 25, echo_command = true },
+                settings = {
+                    qf_height = 25,
+                    echo_command = true,
+                    default_profile = "base",
+                },
                 profiles = {
-                    default = { configuration = "Release" },
+                    base = { configuration = "Release" },
                     ["Release|x64"] = { platform = "x64" },
                 },
             })
             assert.equals(25, cfg.settings.qf_height)
             assert.equals(true, cfg.settings.echo_command)
-            assert.equals("Release", cfg.profiles.default.configuration)
+            assert.equals("Release", cfg.profiles.base.configuration)
             local profile = Config.get_profile(cfg, "Release|x64")
             assert.equals("Release", profile.configuration)
             assert.equals("x64", profile.platform)
 
+            -- Missing target profile still inherits from the root.
             local fallback = Config.get_profile(cfg, "missing")
             assert.equals("Release", fallback.configuration)
         end
     )
 
-    it("get_profile flattens default + profile fields", function()
+    it("get_profile flattens engine + root + named profile fields", function()
         local Config = require("msvc.config")
         local cfg = Config.merge_config({
+            settings = { default_profile = "base" },
             profiles = {
-                default = {
+                base = {
                     arch = "x64",
                     vcvars_ver = "14.16",
                 },
@@ -67,6 +76,8 @@ describe("msvc.config", function()
         local r2 = Config.get_profile(cfg, "custom")
         assert.equals("arm64", r2.arch)
         assert.equals("14.16", r2.vcvars_ver)
+        -- Engine fallback still applies when nothing overrides it.
+        assert.equals("x64", r.host_arch)
     end)
 
     it("merge_config warns on misplaced top-level keys", function()
@@ -75,7 +86,7 @@ describe("msvc.config", function()
         local cfg = Config.merge_config({
             -- Belongs in `settings.compile_commands`.
             compile_commands = { outdir = "bin" },
-            -- Belongs in `profiles.default.arch`.
+            -- Belongs on a profile entry.
             arch = "x64",
             -- Truly unknown.
             wibble = true,
@@ -92,15 +103,16 @@ describe("msvc.config", function()
         assert.is_truthy(joined:find("compile_commands", 1, true))
         assert.is_truthy(joined:find("settings.compile_commands", 1, true))
         assert.is_truthy(joined:find("arch", 1, true))
-        assert.is_truthy(joined:find("profiles.default.arch", 1, true))
+        assert.is_truthy(joined:find("profile entry", 1, true))
         assert.is_truthy(joined:find("wibble", 1, true))
     end)
 
-    it("list_profile_names excludes default", function()
+    it("list_profile_names excludes the configured default_profile", function()
         local Config = require("msvc.config")
         local cfg = Config.merge_config({
+            settings = { default_profile = "base" },
             profiles = {
-                default = {},
+                base = {},
                 grsc = {},
                 driver = {},
             },
@@ -108,6 +120,18 @@ describe("msvc.config", function()
         local names = Config.list_profile_names(cfg)
         assert.same({ "driver", "grsc" }, names)
     end)
+
+    it(
+        "list_profile_names without default_profile lists every profile",
+        function()
+            local Config = require("msvc.config")
+            local cfg = Config.merge_config({
+                profiles = { grsc = {}, driver = {} },
+            })
+            local names = Config.list_profile_names(cfg)
+            assert.same({ "driver", "grsc" }, names)
+        end
+    )
 
     it("merge_config merges profile fields per-key across calls", function()
         local Config = require("msvc.config")
@@ -138,14 +162,14 @@ describe("msvc.config", function()
             Config.validate({ settings = { qf_height = "tall" } })
         end)
         assert.has_error(function()
-            Config.validate({ profiles = { default = { jobs = "lots" } } })
+            Config.validate({ profiles = { base = { jobs = "lots" } } })
         end)
         assert.has_error(function()
             Config.validate({ settings = { qf_height = 0 } })
         end)
         assert.has_error(function()
             Config.validate({
-                profiles = { default = { msbuild_args = { 1, 2, 3 } } },
+                profiles = { base = { msbuild_args = { 1, 2, 3 } } },
             })
         end)
         assert.has_error(function()
@@ -187,6 +211,19 @@ describe("msvc.config", function()
             Config.validate({ settings = { default_profile = 42 } })
         end)
     end)
+
+    it(
+        "validate rejects default_profile that does not match any profile",
+        function()
+            local Config = require("msvc.config")
+            local ok, err = pcall(Config.validate, {
+                settings = { default_profile = "missing" },
+                profiles = { grsc = {} },
+            })
+            assert.is_false(ok)
+            assert.matches("default_profile", tostring(err))
+        end
+    )
 
     it("format_entry_lines emits sorted key=value lines", function()
         local Config = require("msvc.config")

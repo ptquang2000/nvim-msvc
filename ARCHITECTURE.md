@@ -12,7 +12,8 @@ them. It is meant for contributors; user-facing docs live in
   per-buffer state — solution / project / profile selection is global
   to the Neovim session.
 - **Layered, non-recursive config.** A `MsvcConfig` is the merge of
-  `settings`, `profiles.default`, and the active named profile.
+  `settings`, the configured root profile (named by
+  `settings.default_profile`, required), and the active named profile.
   Profiles are flat: MSBuild parameters (`configuration`, `platform`,
   `target`, `msbuild_args`, …) and dev-env parameters (`arch`,
   `host_arch`, `vcvars_ver`, `winsdk`, `vs_*`, …) live side by side
@@ -70,7 +71,8 @@ and `KNOWN_PROFILE` (which fields a profile may carry — both MSBuild
 and dev-env keys). Public functions:
 - `Config.merge_config(partial)` — layer the user input over defaults.
 - `Config.get_profile(config, name)` — return the effective flat
-  profile view (`profiles.default` ⨉ `profiles[name]`).
+  profile view (engine defaults ⨉ root profile named by
+  `settings.default_profile` ⨉ `profiles[name]`).
 - `Config.validate(config)` — type-check fields against
   `KNOWN_SETTINGS` / `KNOWN_PROFILE`; collect a list of error strings.
 - `Config.format_entry_lines(header, tbl)` — render `key = value`
@@ -222,14 +224,18 @@ status logged, qf opened on failure
 
 | When                  | Final view                                                                                    |
 |-----------------------|-----------------------------------------------------------------------------------------------|
-| Any profile field     | `defaults` → `profiles.default` → `profiles[name]` → `profile_overrides[name]`                 |
+| Any profile field     | `engine defaults` → `profiles[settings.default_profile]` → `profiles[name]` → `profile_overrides[name]` |
 
-`profiles.default` is the only profile that contributes to *every*
-named view; named profiles are isolated from each other. MSBuild
-parameters (`configuration`, `platform`, `msbuild_args`, …) and
-dev-env parameters (`arch`, `host_arch`, `vcvars_ver`, `winsdk`,
-`vs_*`, …) all live on the same flat table — there is no schema-level
-partitioning. Subsystems read the keys they care about.
+`settings.default_profile` is **required** and names the *root* profile
+that contributes to every named view; other named profiles are
+isolated from each other and merged on top. Engine defaults
+(`vs_products`, `arch`, `msbuild_args`, …) live in an internal
+`INTERNAL_DEFAULTS` table inside `config.lua` so users only need to
+declare fields they want to override. MSBuild parameters
+(`configuration`, `platform`, `msbuild_args`, …) and dev-env parameters
+(`arch`, `host_arch`, `vcvars_ver`, `winsdk`, `vs_*`, …) all live on
+the same flat table — there is no schema-level partitioning.
+Subsystems read the keys they care about.
 
 ## Testing
 
