@@ -140,6 +140,8 @@ function MsvcLog:show_build()
     self:_ensure_live_win()
 end
 
+local LIVE_BUF_NAME = "msvc://live-build-log"
+
 --- Return (creating if necessary) the persistent live-build-log buffer.
 --- @return integer bufnr
 function MsvcLog:_ensure_live_buf()
@@ -149,8 +151,17 @@ function MsvcLog:_ensure_live_buf()
     end
     state = state or {}
     self._live_tail = state
+
+    -- Reuse a pre-existing live-log buffer (e.g. left over from a plugin
+    -- reload) — otherwise nvim_buf_set_name would raise E95.
+    local existing = vim.fn.bufnr(LIVE_BUF_NAME)
+    if existing ~= -1 and vim.api.nvim_buf_is_valid(existing) then
+        state.buf = existing
+        return existing
+    end
+
     local buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_buf_set_name(buf, "msvc://live-build-log")
+    vim.api.nvim_buf_set_name(buf, LIVE_BUF_NAME)
     vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
     vim.api.nvim_set_option_value("bufhidden", "hide", { buf = buf })
     vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
