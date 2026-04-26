@@ -118,6 +118,12 @@ function MsvcBuild:_argv()
     else
         argv[#argv + 1] = "/m"
     end
+    -- Disable MSBuild node reuse. Without this, /m spawns long-lived
+    -- worker MSBuild.exe processes that detach from the parent and
+    -- linger for ~15 minutes after the build — they survive both
+    -- jobstop and taskkill /T because they're no longer in the tree
+    -- once the parent exits, leaving orphans on every cancel/failure.
+    argv[#argv + 1] = "/nr:false"
     argv[#argv + 1] = "/p:Configuration=" .. ctx.configuration
     argv[#argv + 1] = "/p:Platform=" .. ctx.platform
     if ctx.target ~= nil and ctx.target ~= "" then
