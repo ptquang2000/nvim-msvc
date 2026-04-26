@@ -133,7 +133,13 @@ local function resolve_install(msvc, profile, vswhere)
         install = profile.install_path
     end
     if (not install or install == "") and vswhere then
-        local inst = VsWhere.find_latest({ vswhere_path = vswhere })
+        local inst = VsWhere.find_latest({
+            vswhere_path = vswhere,
+            vs_version = profile.vs_version,
+            vs_prerelease = profile.vs_prerelease,
+            vs_products = profile.vs_products,
+            vs_requires = profile.vs_requires,
+        })
         if inst and inst.installationPath then
             install = inst.installationPath
         end

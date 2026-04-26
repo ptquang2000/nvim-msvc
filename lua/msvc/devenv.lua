@@ -153,6 +153,10 @@ function M.resolve(opts)
     if install_path == nil then
         local inst = VsWhere.find_latest({
             vswhere_path = opts.vswhere_path,
+            vs_version = opts.vs_version,
+            vs_prerelease = opts.vs_prerelease,
+            vs_products = opts.vs_products,
+            vs_requires = opts.vs_requires,
         })
         if not inst or not inst.installationPath then
             return nil, "no Visual Studio installation found"

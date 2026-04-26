@@ -11,7 +11,73 @@ local M = {}
 local DEFAULT_VSWHERE =
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\vswhere.exe"
 
+-- Retained for backward-compatibility with external references; no longer
+-- used by the default args list (callers drive `-requires` via
+-- `opts.vs_requires`).
 local VC_TOOLS_REQ = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+local _ = VC_TOOLS_REQ
+
+--- Build the `vswhere` argv (excluding the executable and the trailing
+--- `-format json -utf8 -nologo` flags) from a profile-shaped opts table.
+---
+--- Recognised keys:
+---   * `vs_products`  string[]  — emitted as `-products A B ...`.
+---     Defaults to `{"*"}` when nil/empty.
+---   * `vs_prerelease` boolean  — emits `-prerelease` when truthy.
+---   * `vs_version`   string    — emitted as `-version <value>` when set
+---     and not `"latest"` / `"any"`. Passed verbatim so callers can use
+---     vswhere's range syntax, e.g. `"[17.0,18.0)"`.
+---   * `vs_requires`  string[]  — emitted as one `-requires <id>` pair
+---     per element. When nil/empty, no `-requires` flag is emitted.
+---
+--- `-all` is always included (matches existing behavior).
+---
+---@param opts table|nil
+---@return string[]
+local function build_args(opts)
+    opts = opts or {}
+    local args = {}
+
+    args[#args + 1] = "-products"
+    local products = opts.vs_products
+    if type(products) == "table" and #products > 0 then
+        for _, p in ipairs(products) do
+            args[#args + 1] = p
+        end
+    else
+        args[#args + 1] = "*"
+    end
+
+    args[#args + 1] = "-all"
+
+    if opts.vs_prerelease then
+        args[#args + 1] = "-prerelease"
+    end
+
+    local v = opts.vs_version
+    if
+        type(v) == "string"
+        and v ~= ""
+        and v ~= "latest"
+        and v ~= "any"
+    then
+        args[#args + 1] = "-version"
+        args[#args + 1] = v
+    end
+
+    if type(opts.vs_requires) == "table" then
+        for _, req in ipairs(opts.vs_requires) do
+            if type(req) == "string" and req ~= "" then
+                args[#args + 1] = "-requires"
+                args[#args + 1] = req
+            end
+        end
+    end
+
+    return args
+end
+
+M._build_args = build_args
 
 --- Locate `vswhere.exe`.
 ---
@@ -122,12 +188,16 @@ function M.run_vswhere(args, vswhere_path)
     return decoded, nil
 end
 
---- List Visual Studio installations that include the C++ x64/x86 toolset.
+--- List Visual Studio installations matching the profile-shaped `opts`.
 ---
---- Equivalent to:
----   `vswhere -products * -all -prerelease -requires <VC.Tools.x86.x64>`
+--- Args fed to `vswhere` are derived from `opts.vs_products`,
+--- `opts.vs_prerelease`, `opts.vs_version`, and `opts.vs_requires`. See
+--- `build_args` for the exact mapping. With no opts the equivalent
+--- invocation is `vswhere -products * -all`.
 ---
---- @param opts table|nil  May contain `vswhere_path` or `settings.vswhere_path`.
+--- @param opts table|nil  May contain `vswhere_path` or `settings.vswhere_path`,
+---                        plus `vs_products`, `vs_prerelease`, `vs_version`,
+---                        `vs_requires`.
 --- @return table[]        Array of installation entries (possibly empty).
 function M.list_installations(opts)
     opts = opts or {}
@@ -137,14 +207,7 @@ function M.list_installations(opts)
         return {}
     end
 
-    local args = {
-        "-products",
-        "*",
-        "-all",
-        "-prerelease",
-        "-requires",
-        VC_TOOLS_REQ,
-    }
+    local args = build_args(opts)
     local result, err = M.run_vswhere(args, exe)
     if not result then
         Log:warn("vswhere: list_installations failed: %s", err or "?")
@@ -234,19 +297,14 @@ function M.list_installations_async(opts, callback)
         callback({}, "vswhere.exe not found")
         return
     end
-    local cmd = {
-        exe,
-        "-products",
-        "*",
-        "-all",
-        "-prerelease",
-        "-requires",
-        VC_TOOLS_REQ,
-        "-format",
-        "json",
-        "-utf8",
-        "-nologo",
-    }
+    local cmd = { exe }
+    for _, a in ipairs(build_args(opts)) do
+        cmd[#cmd + 1] = a
+    end
+    cmd[#cmd + 1] = "-format"
+    cmd[#cmd + 1] = "json"
+    cmd[#cmd + 1] = "-utf8"
+    cmd[#cmd + 1] = "-nologo"
     vim.system(
         cmd,
         { text = true },

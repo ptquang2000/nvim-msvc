@@ -197,9 +197,7 @@ function M.get_default_config()
                     "Microsoft.VisualStudio.Product.Enterprise",
                     "Microsoft.VisualStudio.Product.BuildTools",
                 },
-                vs_requires = {
-                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-                },
+                vs_requires = {},
                 vswhere_path = nil,
                 vcvars_ver = nil,
                 arch = "x64",

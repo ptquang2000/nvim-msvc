@@ -228,7 +228,13 @@ function Msvc:_warm_install_path()
     end
     local vswhere_path = profile_view.vswhere_path
     VsWhere.list_installations_async(
-        { vswhere_path = vswhere_path },
+        {
+            vswhere_path = vswhere_path,
+            vs_version = profile_view.vs_version,
+            vs_prerelease = profile_view.vs_prerelease,
+            vs_products = profile_view.vs_products,
+            vs_requires = profile_view.vs_requires,
+        },
         function(installs, err)
             if err then
                 Log:debug("warm install_path: %s", err)
@@ -272,6 +278,18 @@ function Msvc:resolve(opts)
     if opts.vswhere_path == nil then
         opts.vswhere_path = entry.vswhere_path
     end
+    if opts.vs_version == nil then
+        opts.vs_version = entry.vs_version
+    end
+    if opts.vs_prerelease == nil then
+        opts.vs_prerelease = entry.vs_prerelease
+    end
+    if opts.vs_products == nil then
+        opts.vs_products = entry.vs_products
+    end
+    if opts.vs_requires == nil then
+        opts.vs_requires = entry.vs_requires
+    end
     local env, err = DevEnv.resolve(opts)
     if not env then
         Log:error("env resolve failed: %s", tostring(err))
@@ -294,8 +312,13 @@ function Msvc:resolve_install_path()
     end
     local profile_view =
         Config.get_profile(self.config, self.state:profile_name())
-    local inst =
-        VsWhere.find_latest({ vswhere_path = profile_view.vswhere_path })
+    local inst = VsWhere.find_latest({
+        vswhere_path = profile_view.vswhere_path,
+        vs_version = profile_view.vs_version,
+        vs_prerelease = profile_view.vs_prerelease,
+        vs_products = profile_view.vs_products,
+        vs_requires = profile_view.vs_requires,
+    })
     if not inst or not inst.installationPath then
         Log:error("no Visual Studio installation found")
         return nil
