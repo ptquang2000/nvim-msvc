@@ -270,16 +270,9 @@ subcommands.status = {
 }
 
 subcommands.log = {
-    desc = "Open the in-memory plugin log buffer",
+    desc = "Open the build log (live tail while building, last build output otherwise)",
     impl = function()
-        msvc:show_log()
-    end,
-}
-
-subcommands.build_log = {
-    desc = "Open the captured MSBuild output buffer",
-    impl = function()
-        msvc:show_build_log()
+        msvc.log:show_build()
     end,
 }
 

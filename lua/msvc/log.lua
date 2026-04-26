@@ -2,7 +2,6 @@
 ---@field level integer
 ---@field lines string[]
 ---@field max_lines integer
----@field last_build_output string[]
 ---@field _enabled boolean
 
 local MsvcLog = {}
@@ -35,7 +34,6 @@ function MsvcLog:new()
         level = levels.INFO,
         lines = {},
         max_lines = 50,
-        last_build_output = {},
         _enabled = true,
     }, self)
 end
@@ -121,34 +119,25 @@ function MsvcLog:error(msg, ...)
     self:_emit(levels.ERROR, msg, ...)
 end
 
-local function open_scratch(title, content)
-    vim.cmd("vnew")
-    local buf = vim.api.nvim_get_current_buf()
-    vim.api.nvim_set_option_value("buftype", "nofile", { buf = buf })
-    vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = buf })
-    vim.api.nvim_set_option_value("swapfile", false, { buf = buf })
-    vim.api.nvim_buf_set_name(buf, title)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, content or {})
-    return buf
-end
-
---- Open a vertical scratch buffer showing the in-memory log ring.
-function MsvcLog:show()
-    open_scratch("msvc://log", vim.deepcopy(self.lines))
-end
-
---- Append a single line of build output for later inspection.
---- @param line string
-function MsvcLog:append_build_output(line)
-    if type(line) ~= "string" then
-        line = tostring(line)
+--- Open (or focus) the build log buffer. While a build is running this
+--- streams live output; otherwise it shows the captured output of the
+--- most recent build (until the next build starts and resets it).
+function MsvcLog:show_build()
+    local buf = self:_ensure_live_buf()
+    local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    local empty = #lines == 0 or (#lines == 1 and lines[1] == "")
+    if empty then
+        vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+        vim.api.nvim_buf_set_lines(
+            buf,
+            0,
+            -1,
+            false,
+            { "-- no build output yet --" }
+        )
+        vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
     end
-    self.last_build_output[#self.last_build_output + 1] = line
-end
-
---- Open a vertical scratch buffer showing the captured build output.
-function MsvcLog:open_build_log()
-    open_scratch("msvc://build-log", vim.deepcopy(self.last_build_output))
+    self:_ensure_live_win()
 end
 
 --- Return (creating if necessary) the persistent live-build-log buffer.

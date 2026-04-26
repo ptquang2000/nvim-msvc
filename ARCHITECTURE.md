@@ -59,8 +59,8 @@ plugin/msvc.lua              Loads the plugin on Neovim startup
 The orchestration layer. Holds the merged `config`, the `state`
 instance, the `extensions` bus, and the in-flight `current_build`. It
 exposes the public Lua API (`setup`, `build`, `cancel_build`, `resolve`,
-`status`, `set_profile`, `set_project`, `auto_discover`, `show_log`,
-`show_build_log`) and owns the **transient override table**
+`status`, `set_profile`, `set_project`, `auto_discover`) and owns the
+**transient override table**
 `profile_overrides[name]`, keyed by profile name and cleared
 whenever the profile is re-selected.
 
@@ -162,9 +162,10 @@ via `vim.notify` and never bubble up.
 
 ### `log.lua` — `MsvcLog`
 Ring-buffer log (`max_lines`, default 5000) shared across the plugin.
-Routes to `vim.notify` when a message exceeds `settings.notify_level`,
-keeps the full transcript available for `:Msvc log`, and persists the
-last build's stdout to `settings.last_log_path` for `:Msvc build_log`.
+Routes to `vim.notify` when a message exceeds `settings.notify_level`
+and owns the persistent live build-log buffer (`msvc://live-build-log`)
+that backs `:Msvc log` — it streams MSBuild output while a build is
+running and retains the last build's transcript when idle.
 
 ### `autocmd.lua` — shared augroup
 Returns the `MsvcAugroup` augroup id. Every autocmd in the plugin

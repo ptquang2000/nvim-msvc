@@ -142,7 +142,6 @@ function MsvcBuild:_consume(buffer, data, stream)
             local clean = line:gsub("\r$", "")
             if clean ~= "" then
                 buffer[#buffer + 1] = clean
-                Log:append_build_output(clean)
                 Ext.extensions:emit(
                     Ext.event_names.BUILD_OUTPUT,
                     self,

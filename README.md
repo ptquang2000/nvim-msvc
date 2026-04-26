@@ -187,8 +187,8 @@ All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
   (`taskkill /T /F /PID …`).
 - `:Msvc status` — Echo solution / project / install snapshot plus the
   active profile's full field listing.
-- `:Msvc log` — Open the in-memory plugin log buffer.
-- `:Msvc build_log` — Open the captured MSBuild output buffer.
+- `:Msvc log` — Open the build log: live tail while a build is running,
+  otherwise the most recent build's captured output.
 - `:Msvc profile <name>` — Set (or show) the active named profile from
   `config.profiles`. A profile holds both MSBuild settings
   (`configuration`, `platform`, `target`, `msbuild_args`, `jobs`, ...)
@@ -309,8 +309,8 @@ Ext.extensions:add_listener({
   `solution_projects` (or by `.vcxproj` path); pass `nil` to clear.
 - `msvc:auto_discover()` — Re-scan cwd for the parent `.sln` and refresh
   the cached project list; returns the pinned solution path.
-- `msvc:show_log()` / `msvc:show_build_log()` — Open the plugin and MSBuild
-  log buffers.
+- `msvc.log:show_build()` — Open the build log buffer (live tail while
+  building, last build's output otherwise).
 
 ## Architecture
 
