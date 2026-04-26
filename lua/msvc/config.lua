@@ -9,6 +9,7 @@
 ---@field cache_env boolean
 ---@field env_cache_path string
 ---@field last_log_path string
+---@field default_profile string|nil
 ---@field on_build_start fun(ctx: table)|nil
 ---@field on_build_done fun(ctx: table, ok: boolean, elapsed_ms: integer)|nil
 ---@field on_build_cancel fun(ctx: table)|nil
@@ -34,6 +35,7 @@
 ---@field cache_env? boolean
 ---@field env_cache_path? string
 ---@field last_log_path? string
+---@field default_profile? string
 ---@field on_build_start? fun(ctx: table)
 ---@field on_build_done? fun(ctx: table, ok: boolean, elapsed_ms: integer)
 ---@field on_build_cancel? fun(ctx: table)
@@ -95,6 +97,7 @@ local KNOWN_SETTINGS = {
     cache_env = "boolean",
     env_cache_path = "string",
     last_log_path = "string",
+    default_profile = "string",
     on_build_start = "function",
     on_build_done = "function",
     on_build_cancel = "function",
@@ -170,6 +173,11 @@ function M.get_default_config()
             cache_env = true,
             env_cache_path = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
             last_log_path = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
+            -- Name of the profile to activate on setup (must match a key
+            -- in `profiles` other than "default", or "default" to use it
+            -- directly). When nil, the first non-default profile in
+            -- alphabetical order is auto-selected.
+            default_profile = nil,
             on_build_start = nil,
             on_build_done = nil,
             on_build_cancel = nil,

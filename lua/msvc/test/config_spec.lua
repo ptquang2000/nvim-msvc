@@ -171,6 +171,23 @@ describe("msvc.config", function()
         Config.validate(Config.get_default_config())
     end)
 
+    it("default_profile is a recognized setting", function()
+        local Config = require("msvc.config")
+        local cfg = Config.merge_config({
+            settings = { default_profile = "grsc" },
+            profiles = { grsc = {}, driver = {} },
+        })
+        assert.equals("grsc", cfg.settings.default_profile)
+        Config.validate(cfg)
+    end)
+
+    it("validate rejects non-string default_profile", function()
+        local Config = require("msvc.config")
+        assert.has_error(function()
+            Config.validate({ settings = { default_profile = 42 } })
+        end)
+    end)
+
     it("format_entry_lines emits sorted key=value lines", function()
         local Config = require("msvc.config")
         local lines = Config.format_entry_lines("profile=grsc", {

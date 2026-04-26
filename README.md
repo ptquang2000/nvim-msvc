@@ -159,12 +159,14 @@ sources the dev env from the active profile:
 :Msvc compile
 ```
 
-On the first `setup()` call the alphabetically-first user-defined
-profile is auto-selected when nothing is active yet, so typical setups
-don't need an explicit `:Msvc profile` to get going. `setup()` also
-kicks off an asynchronous `vswhere` lookup to populate
-`state.install_path` in the background — `setup()` returns immediately
-and the path is filled in by the time you trigger a build.
+On the first `setup()` call the active profile is selected automatically:
+when `settings.default_profile` is set to the name of a configured profile
+that one is loaded; otherwise the alphabetically-first user-defined
+profile is auto-selected. Either way, typical setups don't need an
+explicit `:Msvc profile` to get going. `setup()` also kicks off an
+asynchronous `vswhere` lookup to populate `state.install_path` in the
+background — `setup()` returns immediately and the path is filled in by
+the time you trigger a build.
 A configured `install_path` on `profiles.default` or the active
 profile short-circuits the lookup.
 

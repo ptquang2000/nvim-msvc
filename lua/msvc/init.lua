@@ -196,16 +196,33 @@ function Msvc:_warm_solution()
     Log:debug("warm solution: %s (%d projects)", norm, #self.solution_projects)
 end
 
---- On first setup, select the alphabetically-first user-defined profile
---- when nothing is active yet. Picking a stable order keeps behaviour
---- deterministic across Neovim restarts.
+--- On first setup, select the active profile. Preference order:
+---   1. `settings.default_profile` if it names an existing profile.
+---   2. The alphabetically-first user-defined profile (excluding the
+---      `default` base entry).
+--- Picking a stable order keeps behaviour deterministic across Neovim
+--- restarts.
 function Msvc:_auto_select_defaults()
-    if not self.state:profile_name() then
-        local profiles = Config.list_profile_names(self.config)
-        if profiles[1] then
-            self:set_profile(profiles[1], true)
-            Log:debug("auto-selected profile %q", profiles[1])
+    if self.state:profile_name() then
+        return
+    end
+    local configured = self.config.settings and self.config.settings.default_profile
+    local profiles_tbl = (self.config or {}).profiles or {}
+    if type(configured) == "string" and configured ~= "" then
+        if profiles_tbl[configured] ~= nil then
+            self:set_profile(configured, true)
+            Log:debug("loaded configured default_profile %q", configured)
+            return
         end
+        Log:warn(
+            "config: settings.default_profile=%q does not match any profile — falling back to auto-select",
+            configured
+        )
+    end
+    local profiles = Config.list_profile_names(self.config)
+    if profiles[1] then
+        self:set_profile(profiles[1], true)
+        Log:debug("auto-selected profile %q", profiles[1])
     end
 end
 
