@@ -1,622 +1,421 @@
-local M = {}
-local msvc = require("msvc")
-local Log = require("msvc.log")
+-- msvc.commands — `:Msvc <subcommand> ...` dispatcher and completion.
+
 local Config = require("msvc.config")
+local Discover = require("msvc.discover")
+local VsWhere = require("msvc.vswhere")
+local Util = require("msvc.util")
+local Log = require("msvc.log")
 
----@alias MsvcSubcommand { impl: fun(args: string[], opts: table), complete: (fun(arglead: string, cmdline: string, pos: integer): string[])|nil, desc: string|nil }
+local M = {}
 
----@type table<string, MsvcSubcommand>
-local subcommands = {}
+local SUBCOMMANDS = {}
 
-local function startswith_filter(candidates, arglead)
-    return vim.tbl_filter(function(s)
-        return vim.startswith(s, arglead)
-    end, candidates)
-end
-
--- Property → expected value type. A profile carries the full field set
--- (MSBuild parameters and dev-env parameters together); `:Msvc update
--- <prop> <val>` writes overrides to the active profile.
-local PROFILE_PROPS = {
-    configuration = "string",
-    platform = "string",
-    target = "string",
-    verbosity = "string",
-    max_cpu_count = "number",
-    no_logo = "boolean",
-    extra_args = "table",
-    msbuild_args = "table",
-    jobs = "number",
-    vs_version = "string",
-    vs_prerelease = "boolean",
-    vs_products = "table",
-    vs_requires = "table",
-    vswhere_path = "string",
-    vcvars_ver = "string",
-    winsdk = "string",
-    vcvars_spectre_libs = "string",
-    arch = "string",
-    host_arch = "string",
-}
-
--- Properties that live on the global runtime state rather than on any
--- profile entry. `:Msvc update` has no state-level properties at the
--- moment — `install_path` was retired (resolved automatically from
--- `vs_version` + vswhere), and no other state field is user-writable.
-local STATE_PROPS = {}
-
--- Static fallback value lists. Used both for properties that have no
--- async source (target/arch/host_arch/verbosity/no_logo/...) and as a
--- pre-warm fallback for properties that *do* have a dynamic source
--- (vs_version, configuration, platform), so completion never returns
--- empty during the brief window between setup() and the warm callback.
-local static_fallback = {
-    configuration = { "Debug", "Release" },
-    platform = { "Win32", "x64" },
-    target = { "Build", "Rebuild", "Clean" },
-    arch = { "x64", "x86", "arm64" },
-    host_arch = { "x64", "x86", "arm64" },
-    verbosity = { "quiet", "minimal", "normal", "detailed", "diagnostic" },
-    no_logo = { "true", "false" },
-    vs_prerelease = { "false", "true" },
-    vs_version = { "latest", "[17.0,18.0)", "[16.0,17.0)", "[15.0,16.0)" },
-    vs_products = {
-        "Microsoft.VisualStudio.Product.BuildTools",
-        "Microsoft.VisualStudio.Product.Community",
-        "Microsoft.VisualStudio.Product.Enterprise",
-        "Microsoft.VisualStudio.Product.Professional",
-    },
-    vcvars_spectre_libs = { "spectre", "spectre_load", "spectre_load_cf" },
-}
-
--- Resolve the active VS install path for dynamic completion. Falls back
--- to the first entry vswhere returned so completion still works before
--- a profile has been selected.
-local function active_install_path()
-    local p = msvc.state and msvc.state.install_path
-    if type(p) == "string" and p ~= "" then
-        return p
+---@param msvc Msvc
+local function format_status(msvc)
+    local prof = msvc:active_profile()
+    local lines = {}
+    lines[#lines + 1] = "solution = " .. (msvc.solution or "<none>")
+    lines[#lines + 1] = "project  = " .. (msvc.project or "<none>")
+    if msvc.install then
+        local inst = msvc.install
+        lines[#lines + 1] = ("install  = %s (%s)"):format(
+            inst.displayName or "?",
+            inst.installationVersion or "?"
+        )
+        lines[#lines + 1] = "path     = " .. (inst.installationPath or "?")
+    else
+        lines[#lines + 1] = "install  = <unresolved>"
     end
-    local installs = msvc.vs_installations or {}
-    for _, inst in ipairs(installs) do
-        if type(inst.installationPath) == "string" then
-            return inst.installationPath
+    if msvc.config.settings.compile_commands then
+        local cc = msvc.config.settings.compile_commands
+        lines[#lines + 1] = "compile_commands"
+        for _, k in ipairs({
+            "enabled",
+            "builddir",
+            "outdir",
+            "merge",
+            "deduplicate",
+        }) do
+            if cc[k] ~= nil then
+                lines[#lines + 1] = ("  %s = %s"):format(k, vim.inspect(cc[k]))
+            end
         end
     end
-    return nil
+    if not prof then
+        lines[#lines + 1] = "profile  = <none>"
+    else
+        lines[#lines + 1] = "profile  = " .. (msvc.profile_name or "?")
+        local keys = {}
+        for k, _ in pairs(prof) do
+            keys[#keys + 1] = k
+        end
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            lines[#lines + 1] = ("  %s = %s"):format(k, vim.inspect(prof[k]))
+        end
+    end
+    return lines
 end
 
-local function list_dir_entries(dir)
-    local out = {}
-    local ok, scanner = pcall(vim.loop.fs_scandir, dir)
-    if not ok or not scanner then
+local function print_lines(lines)
+    for _, l in ipairs(lines) do
+        vim.api.nvim_echo({ { l } }, false, {})
+    end
+end
+
+---@param msvc Msvc
+SUBCOMMANDS.status = {
+    desc = "show active solution / project / profile / install",
+    run = function(msvc)
+        msvc:resolve_install()
+        print_lines(format_status(msvc))
+    end,
+}
+
+SUBCOMMANDS.build = {
+    desc = "build the active target ([target] = MSBuild /t: argument)",
+    run = function(msvc, args)
+        msvc:build(args[1])
+    end,
+}
+
+SUBCOMMANDS.rebuild = {
+    desc = "rebuild the active target",
+    run = function(msvc)
+        msvc:rebuild()
+    end,
+}
+
+SUBCOMMANDS.clean = {
+    desc = "clean the active target",
+    run = function(msvc)
+        msvc:clean()
+    end,
+}
+
+SUBCOMMANDS.cancel = {
+    desc = "cancel an in-flight build",
+    run = function(msvc)
+        msvc:cancel()
+    end,
+}
+
+SUBCOMMANDS.discover = {
+    desc = "re-scan cwd for a .sln",
+    run = function(msvc)
+        local sln = msvc:discover_solution()
+        if sln then
+            Log:info(
+                "msvc: solution = %s (%d projects)",
+                sln,
+                #msvc.solution_projects
+            )
+        else
+            Log:warn("msvc: no .sln found in or above %s", vim.fn.getcwd())
+        end
+    end,
+}
+
+SUBCOMMANDS.profile = {
+    desc = "switch active profile (no arg → list)",
+    run = function(msvc, args)
+        if #args == 0 then
+            local names = Config.list_profile_names(msvc.config)
+            print_lines({
+                ("profiles (%d): %s"):format(#names, table.concat(names, ", ")),
+            })
+            print_lines({ "active = " .. (msvc.profile_name or "<none>") })
+            return
+        end
+        if msvc:set_profile(args[1]) then
+            Log:info("msvc: profile = %s", args[1])
+        end
+    end,
+    complete = function(msvc, _arglead)
+        return Config.list_profile_names(msvc.config)
+    end,
+}
+
+SUBCOMMANDS.project = {
+    desc = "pin a .vcxproj as the build target ('-' clears)",
+    run = function(msvc, args)
+        if #args == 0 then
+            print_lines({ "project = " .. (msvc.project or "<none>") })
+            return
+        end
+        if args[1] == "-" or args[1] == "none" then
+            msvc:set_project(nil)
+            Log:info("msvc: cleared pinned project")
+            return
+        end
+        if msvc:set_project(args[1]) then
+            Log:info("msvc: project = %s", msvc.project)
+        end
+    end,
+    complete = function(msvc, _arglead)
+        local out = {}
+        for _, entry in ipairs(msvc.solution_projects or {}) do
+            out[#out + 1] = entry.name
+        end
+        table.sort(out)
+        return out
+    end,
+}
+
+SUBCOMMANDS.log = {
+    desc = "open the live build-log buffer",
+    run = function()
+        Log:show_build()
+    end,
+}
+
+local function field_completions(msvc, field)
+    local prof = msvc:active_profile() or {}
+    if field == "configuration" or field == "platform" then
+        local d = Discover.discover_targets(msvc.solution, msvc.project)
+        if field == "configuration" then
+            return d.configurations
+        end
+        return d.platforms
+    elseif field == "arch" then
+        return { "x86", "x64", "arm", "arm64" }
+    elseif field == "vs_version" then
+        local out = { "latest", "2017", "2019", "2022" }
+        local ok, installs = pcall(VsWhere.list_installations, {
+            vswhere_path = prof.vswhere_path,
+            vs_prerelease = true,
+        })
+        if ok and type(installs) == "table" then
+            local seen = {}
+            for _, v in ipairs(out) do
+                seen[v] = true
+            end
+            for _, inst in ipairs(installs) do
+                local v = inst.installationVersion
+                if v and not seen[v] then
+                    seen[v] = true
+                    out[#out + 1] = v
+                end
+            end
+        end
+        return out
+    elseif field == "vs_prerelease" then
+        return { "true", "false" }
+    elseif field == "vs_products" then
+        return {
+            "Microsoft.VisualStudio.Product.Community",
+            "Microsoft.VisualStudio.Product.Professional",
+            "Microsoft.VisualStudio.Product.Enterprise",
+            "Microsoft.VisualStudio.Product.BuildTools",
+        }
+    elseif field == "vcvars_ver" then
+        if not msvc.install then
+            pcall(msvc.resolve_install, msvc)
+        end
+        local install = msvc.install
+        if not install or not install.installationPath then
+            return {}
+        end
+        local root =
+            Util.join_path(install.installationPath, "VC", "Tools", "MSVC")
+        local out = {}
+        if Util.is_dir(root) then
+            for _, p in ipairs(vim.fn.globpath(root, "*", true, true)) do
+                if Util.is_dir(p) then
+                    out[#out + 1] = Util.basename(p)
+                end
+            end
+            table.sort(out, function(a, b)
+                return a > b
+            end)
+        end
+        return out
+    elseif field == "winsdk" then
+        local out = {}
+        local roots = {
+            "C:\\Program Files (x86)\\Windows Kits\\10\\Include",
+            "C:\\Program Files\\Windows Kits\\10\\Include",
+        }
+        for _, r in ipairs(roots) do
+            if Util.is_dir(r) then
+                for _, p in ipairs(vim.fn.globpath(r, "*", true, true)) do
+                    if Util.is_dir(p) then
+                        local n = Util.basename(p)
+                        if n:match("^10%.0%.") then
+                            out[#out + 1] = n
+                        end
+                    end
+                end
+            end
+        end
+        table.sort(out, function(a, b)
+            return a > b
+        end)
+        return out
+    elseif field == "jobs" then
+        return { "1", "2", "4", "6", "8", "12", "16" }
+    end
+    return {}
+end
+
+local function parse_value(field, raw)
+    if field == "jobs" then
+        local n = tonumber(raw)
+        if not n then
+            error(("`jobs` expects a number, got %q"):format(raw), 0)
+        end
+        return n
+    elseif field == "vs_prerelease" then
+        if raw == "true" then
+            return true
+        end
+        if raw == "false" then
+            return false
+        end
+        error(("`vs_prerelease` expects true|false, got %q"):format(raw), 0)
+    elseif
+        field == "msbuild_args"
+        or field == "vs_products"
+        or field == "vs_requires"
+    then
+        local out = {}
+        for tok in raw:gmatch("%S+") do
+            out[#out + 1] = tok
+        end
         return out
     end
-    while true do
-        local name, t = vim.loop.fs_scandir_next(scanner)
-        if not name then
-            break
+    return raw
+end
+
+SUBCOMMANDS.update = {
+    desc = "override a profile field for this session (`<field> <value>`)",
+    run = function(msvc, args)
+        if #args < 2 then
+            Log:warn("usage: :Msvc update <field> <value>")
+            return
         end
-        if t == "directory" or t == "link" then
-            out[#out + 1] = name
+        local field = args[1]
+        local raw = table.concat(args, " ", 2)
+        local found = false
+        for _, k in ipairs(Config.PROFILE_FIELDS) do
+            if k == field then
+                found = true
+                break
+            end
+        end
+        if not found then
+            Log:error("msvc: unknown profile field %q", field)
+            return
+        end
+        local ok, value = pcall(parse_value, field, raw)
+        if not ok then
+            Log:error("msvc: %s", tostring(value))
+            return
+        end
+        msvc:set_override(field, value)
+        Log:info("msvc: %s = %s", field, vim.inspect(value))
+    end,
+    complete = function(msvc, _arglead, args)
+        if #args == 0 then
+            return Config.PROFILE_FIELDS
+        end
+        return field_completions(msvc, args[1])
+    end,
+}
+
+SUBCOMMANDS.help = {
+    desc = "list subcommands",
+    run = function()
+        local names = {}
+        for k, _ in pairs(SUBCOMMANDS) do
+            names[#names + 1] = k
+        end
+        table.sort(names)
+        local lines = { ":Msvc <subcommand> [args]", "" }
+        for _, k in ipairs(names) do
+            lines[#lines + 1] = ("  %-10s %s"):format(
+                k,
+                SUBCOMMANDS[k].desc or ""
+            )
+        end
+        print_lines(lines)
+    end,
+}
+
+local function complete(msvc, arglead, cmdline, _cursorpos)
+    local parts = {}
+    for tok in cmdline:gmatch("%S+") do
+        parts[#parts + 1] = tok
+    end
+    -- parts[1] is "Msvc"; parts[2] is the subcommand
+    local trailing_space = cmdline:sub(-1) == " "
+    if
+        (#parts == 1 and trailing_space) or (#parts == 2 and not trailing_space)
+    then
+        local out = {}
+        for k, _ in pairs(SUBCOMMANDS) do
+            if k:find("^" .. vim.pesc(arglead)) then
+                out[#out + 1] = k
+            end
+        end
+        table.sort(out)
+        return out
+    end
+    local sub = parts[2]
+    local cmd = sub and SUBCOMMANDS[sub]
+    if not cmd or type(cmd.complete) ~= "function" then
+        return {}
+    end
+    -- args = everything after the subcommand
+    local args = {}
+    for i = 3, #parts do
+        args[#args + 1] = parts[i]
+    end
+    if not trailing_space and #args > 0 then
+        args[#args] = nil -- don't include the in-progress argument
+    end
+    local candidates = cmd.complete(msvc, arglead, args) or {}
+    local out = {}
+    for _, c in ipairs(candidates) do
+        if c:find("^" .. vim.pesc(arglead)) then
+            out[#out + 1] = c
         end
     end
     return out
 end
 
--- Enumerate installed MSVC toolsets under <install>\VC\Tools\MSVC\<ver>.
--- Returns the long form (e.g. "14.39.33519") plus the short major.minor
--- form ("14.39") that vcvarsall accepts.
-local function list_vcvars_ver()
-    local install = active_install_path()
-    if not install then
-        return {}
-    end
-    local seen = {}
-    local results = {}
-    local function add(v)
-        if v and v ~= "" and not seen[v] then
-            seen[v] = true
-            results[#results + 1] = v
-        end
-    end
-    for _, name in ipairs(list_dir_entries(install .. "\\VC\\Tools\\MSVC")) do
-        add(name)
-        local short = name:match("^(%d+%.%d+)")
-        add(short)
-    end
-    table.sort(results)
-    return results
-end
-
--- Enumerate installed Windows SDKs via the registry. The Installed Roots
--- key lists every Windows 10/11 SDK as a subkey (e.g. 10.0.22621.0) and
--- exposes the install root as the `KitsRoot10` value. We fall back to
--- scanning the install root's Include directory if the registry walk
--- comes up empty (e.g. SDK installed to a non-default location whose
--- registry write was skipped).
-local WINSDK_REG_KEYS = {
-    "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots",
-    "HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows Kits\\Installed Roots",
-}
-
-local function reg_query(key)
-    local res = vim.system({ "reg.exe", "query", key, "/s" }, { text = true })
-        :wait()
-    if res.code ~= 0 then
-        return nil
-    end
-    return res.stdout or ""
-end
-
-local function list_winsdk()
-    local seen = {}
-    local results = {}
-    local roots = {}
-    local function add_version(v)
-        if v and v ~= "" and not seen[v] then
-            seen[v] = true
-            results[#results + 1] = v
-        end
-    end
-    local function add_root(p)
-        if not p or p == "" then
-            return
-        end
-        p = p:gsub("[\\/]+$", "")
-        roots[p] = true
-    end
-    for _, key in ipairs(WINSDK_REG_KEYS) do
-        local out = reg_query(key)
-        if out then
-            for line in out:gmatch("[^\r\n]+") do
-                -- Subkey lines: "...\Installed Roots\10.0.22621.0"
-                local ver = line:match("Installed Roots\\(%d[%w%.]*)$")
-                if ver then
-                    add_version(ver)
-                end
-                -- Value lines: "    KitsRoot10    REG_SZ    C:\...\Windows Kits\10\"
-                local root = line:match("KitsRoot%w*%s+REG_%w+%s+(.+)$")
-                if root then
-                    add_root((root:gsub("%s+$", "")))
-                end
-            end
-        end
-    end
-    -- Filesystem fallback: registry may be missing entries when an SDK
-    -- was installed without admin rights or stripped down by a CI image.
-    if vim.tbl_isempty(roots) then
-        local pf86 = os.getenv("ProgramFiles(x86)")
-        local pf = os.getenv("ProgramFiles")
-        if pf86 then
-            roots[pf86 .. "\\Windows Kits\\10"] = true
-        end
-        if pf then
-            roots[pf .. "\\Windows Kits\\10"] = true
-        end
-    end
-    for root in pairs(roots) do
-        for _, name in ipairs(list_dir_entries(root .. "\\Include")) do
-            if name:match("^%d") then
-                add_version(name)
-            end
-        end
-    end
-    table.sort(results)
-    return results
-end
-
-local PROP_VALUE_PROVIDERS = {
-    vcvars_ver = list_vcvars_ver,
-    winsdk = list_winsdk,
-}
-
--- Async-warmed candidate sources. Each provider returns the current
--- live list (which may be empty before the warm completes — the
--- selection chain in `update.complete` falls back to `static_fallback`
--- in that case). Providers are pure reads off the singleton so they
--- compose with the warm path without any additional plumbing.
-local dynamic_providers = {
-    vs_version = function()
-        local c = msvc.vs_completion_candidates
-        return c and c.vs_version
-    end,
-    vs_prerelease = function()
-        local c = msvc.vs_completion_candidates
-        return c and c.vs_prerelease
-    end,
-    vs_products = function()
-        local c = msvc.vs_completion_candidates
-        return c and c.vs_products
-    end,
-    vs_requires = function()
-        local c = msvc.vs_completion_candidates
-        return c and c.vs_requires
-    end,
-    configuration = function()
-        local p = msvc.project_targets
-        return p and p.configurations
-    end,
-    platform = function()
-        local p = msvc.project_targets
-        return p and p.platforms
-    end,
-}
-
-local function nonempty_list(t)
-    if type(t) == "table" and #t > 0 then
-        return t
-    end
-    return nil
-end
-
-local function coerce_value(prop, expected_type, raw)
-    if expected_type == "number" then
-        local n = tonumber(raw)
-        if not n then
-            return nil, ("%s expects a number, got %q"):format(prop, raw)
-        end
-        return n
-    elseif expected_type == "boolean" then
-        local lo = tostring(raw):lower()
-        if lo == "true" or lo == "1" or lo == "yes" or lo == "on" then
-            return true
-        end
-        if lo == "false" or lo == "0" or lo == "no" or lo == "off" then
-            return false
-        end
-        return nil, ("%s expects a boolean, got %q"):format(prop, raw)
-    elseif expected_type == "table" then
-        local t = {}
-        for chunk in tostring(raw):gmatch("[^,]+") do
-            local trimmed = (chunk:gsub("^%s+", ""):gsub("%s+$", ""))
-            if trimmed ~= "" then
-                t[#t + 1] = trimmed
-            end
-        end
-        return t
-    end
-    return tostring(raw)
-end
-
-subcommands.build = {
-    desc = "Build the active solution (or active project if one is selected)",
-    impl = function(args)
-        msvc:build({ target = args[1] })
-    end,
-    complete = function(arglead)
-        return startswith_filter({ "Build", "Rebuild", "Clean" }, arglead)
-    end,
-}
-
-subcommands.rebuild = {
-    desc = "Run MSBuild with target=Rebuild",
-    impl = function()
-        msvc:build({ target = "Rebuild" })
-    end,
-}
-
-subcommands.clean = {
-    desc = "Run MSBuild with target=Clean",
-    impl = function()
-        msvc:build({ target = "Clean" })
-    end,
-}
-
-subcommands.cancel = {
-    desc = "Cancel the in-flight MSBuild invocation",
-    impl = function()
-        msvc:cancel_build()
-    end,
-}
-
-subcommands.status = {
-    desc = "Echo solution / project / install snapshot plus the active profile fields",
-    impl = function()
-        msvc:status()
-    end,
-}
-
-subcommands.log = {
-    desc = "Open the build log (live tail while building, last build output otherwise)",
-    impl = function()
-        msvc.log:show_build()
-    end,
-}
-
-subcommands.profile = {
-    desc = "Set (or show) active named profile from config.profiles",
-    impl = function(args)
-        if args[1] then
-            msvc:set_profile(args[1])
-        else
-            local name = msvc.state:profile_name()
-            if name then
-                msvc:log_profile(name)
-            else
-                Log:info("profile = <none>")
-            end
-        end
-    end,
-    complete = function(arglead)
-        return startswith_filter(
-            Config.list_profile_names(msvc.config or {}),
-            arglead
-        )
-    end,
-}
-
-subcommands.update = {
-    desc = "Override a property on the active profile",
-    impl = function(args)
-        local prop = args[1]
-        if not prop or prop == "" then
-            Log:error("usage: :Msvc update <property> <value>")
-            return
-        end
-        if prop == "install_path" then
-            Log:warn(
-                "update: install_path is deprecated and ignored — set `vs_version` (and optionally `vswhere_path`) on your profile instead"
-            )
-            return
-        end
-        local kind, expected
-        if PROFILE_PROPS[prop] then
-            kind = "profile"
-            expected = PROFILE_PROPS[prop]
-        elseif STATE_PROPS[prop] then
-            kind = "state"
-            expected = STATE_PROPS[prop]
-        else
-            Log:error("update: unknown property %q", prop)
-            return
-        end
-        -- Join args[2..] so users can pass space-separated MSBuild flags
-        -- (or anything else) without quoting.
-        local raw
-        if #args >= 2 then
-            raw = table.concat(args, " ", 2)
-        end
-        if raw == nil or raw == "" then
-            Log:error("usage: :Msvc update %s <value>", prop)
-            return
-        end
-        local value, err = coerce_value(prop, expected, raw)
-        if err then
-            Log:error("update: %s", err)
-            return
-        end
-        if kind == "profile" then
-            local name = msvc.state:profile_name()
-            if not name then
-                Log:error(
-                    "update: no profile selected — use `:Msvc profile <name>` first"
-                )
-                return
-            end
-            msvc.profile_overrides = msvc.profile_overrides or {}
-            msvc.profile_overrides[name] = msvc.profile_overrides[name] or {}
-            msvc.profile_overrides[name][prop] = value
-            Log:info(
-                "profile[%s].%s = %s (override)",
-                name,
-                prop,
-                vim.inspect(value, { newline = "", indent = "" })
-            )
-            -- vs_* / vswhere_path drive the VS install lookup. The
-            -- previously-resolved `state.install_path` is now stale, so
-            -- invalidate it and trigger a fresh resolve. We do BOTH a
-            -- synchronous resolve (so an immediately-following `:Msvc
-            -- status` shows the new path) and the async warm (to refresh
-            -- `vs_completion_candidates` for the `:Msvc update` tab
-            -- completion).
-            if prop:match("^vs_") or prop == "vswhere_path" then
-                msvc:_resolve_install_path_sync()
-                msvc:_warm_vs_installations()
-            end
-        else
-            msvc.state:set(prop, value)
-            Log:info(
-                "state.%s = %s",
-                prop,
-                vim.inspect(value, { newline = "", indent = "" })
-            )
-        end
-    end,
-    complete = function(arglead, cmdline, _pos)
-        local words = vim.split(cmdline, "%s+", { trimempty = true })
-        -- Compute which positional arg is currently being typed.
-        --   word[1]=Msvc, word[2]=update, word[3]=property, word[4..]=value
-        local arg_index
-        if arglead == "" then
-            arg_index = #words - 1
-        else
-            arg_index = #words - 2
-        end
-        if arg_index <= 1 then
-            local names = {}
-            for k in pairs(PROFILE_PROPS) do
-                names[#names + 1] = k
-            end
-            for k in pairs(STATE_PROPS) do
-                names[#names + 1] = k
-            end
-            table.sort(names)
-            return startswith_filter(names, arglead)
-        elseif arg_index == 2 then
-            local prop = words[3]
-            if not prop then
-                return {}
-            end
-            -- Selection chain: dynamic (async-warmed) → static fallback
-            -- → registry-walking provider → empty. Dynamic sources may
-            -- still be empty between setup() and the async callback;
-            -- the fallback ensures completion never returns empty for a
-            -- known property.
-            local dyn_fn = dynamic_providers[prop]
-            if dyn_fn then
-                local ok, dyn = pcall(dyn_fn)
-                if ok then
-                    local vals = nonempty_list(dyn)
-                    if vals then
-                        return startswith_filter(vals, arglead)
-                    end
-                end
-            end
-            local fb = static_fallback[prop]
-            if fb then
-                return startswith_filter(fb, arglead)
-            end
-            local provider = PROP_VALUE_PROVIDERS[prop]
-            if provider then
-                local ok, dyn = pcall(provider)
-                if ok and type(dyn) == "table" then
-                    return startswith_filter(dyn, arglead)
-                end
-            end
-        end
-        return {}
-    end,
-}
-
-subcommands.project = {
-    desc = "Pin the active project (subset of the loaded solution); empty/<solution> clears to build the full .sln",
-    impl = function(args)
-        local name = args[1]
-        if not name or name == "" or name == "<solution>" then
-            msvc:set_project(nil)
-            Log:info("project cleared — build will target the full solution")
-            return
-        end
-        msvc:set_project(name)
-    end,
-    complete = function(arglead)
-        local names = { "<solution>" }
-        for _, p in ipairs(msvc.solution_projects or {}) do
-            names[#names + 1] = p.name
-        end
-        return startswith_filter(names, arglead)
-    end,
-}
-
-subcommands.discover = {
-    desc = "Re-scan cwd for the parent .sln and refresh the project list",
-    impl = function()
-        local s = msvc:auto_discover()
-        Log:info(
-            "solution=%s (%d projects)",
-            tostring(s or "<none>"),
-            #(msvc.solution_projects or {})
-        )
-    end,
-}
-
--- Guard for build/compile. These require only an active profile;
--- the merged profile view (engine defaults ⨉ root profile ⨉ named
--- profile) supplies all dev-env parameters needed by `Msvc:resolve`.
-local function require_profile()
-    if not msvc.state:profile_name() then
-        Log:error("no profile selected — use `:Msvc profile <name>`")
-        return false
-    end
-    return true
-end
-
--- Ported from msbuilder.lua :MSCompile. The singleton does not yet
--- implement this method; surface it as a known subcommand so the
--- dispatcher exposes the full surface area and logs a clear warning
--- instead of dying with `unknown subcommand`. It becomes live as soon
--- as `Msvc:compile_current_file` lands.
-subcommands.compile = {
-    desc = "Compile the current buffer's source file (not yet wired)",
-    impl = function()
-        if not require_profile() then
-            return
-        end
-        if type(msvc.compile_current_file) == "function" then
-            msvc:compile_current_file()
-        else
-            Log:warn("compile: not yet implemented on the singleton")
-        end
-    end,
-}
-
-subcommands.help = {
-    desc = "List every :Msvc subcommand",
-    impl = function()
-        local names = {}
-        for k in pairs(subcommands) do
-            names[#names + 1] = k
-        end
-        table.sort(names)
-        Log:info("Subcommands: %s", table.concat(names, ", "))
-    end,
-}
-
----@param opts table  -- :command callback opts (fargs, bang, ...)
-function M.dispatch(opts)
-    local fargs = opts.fargs or {}
-    local sub = fargs[1]
-    if not sub then
-        return subcommands.help.impl({}, opts)
-    end
-    local cmd = subcommands[sub]
-    if not cmd then
-        Log:error("unknown subcommand: %s", sub)
-        return
-    end
-    local rest = {}
-    for i = 2, #fargs do
-        rest[#rest + 1] = fargs[i]
-    end
-    cmd.impl(rest, opts)
-end
-
----@param arglead string
----@param cmdline string
----@param pos integer
----@return string[]
-function M.complete(arglead, cmdline, pos)
-    local words = vim.split(cmdline, "%s+", { trimempty = true })
-    -- words[1] is "Msvc" (possibly with leading bang / range stripped by
-    -- nvim already). When the user has not yet finished typing the
-    -- subcommand we are still on word 2 → return subcommand names.
-    local typing_subcommand = #words <= 1 or (#words == 2 and arglead ~= "")
-    if typing_subcommand then
-        local names = {}
-        for k in pairs(subcommands) do
-            if vim.startswith(k, arglead) then
-                names[#names + 1] = k
-            end
-        end
-        table.sort(names)
-        return names
-    end
-    local sub = words[2]
-    local cmd = subcommands[sub]
-    if cmd and cmd.complete then
-        return cmd.complete(arglead, cmdline, pos)
-    end
-    return {}
-end
-
-function M.register()
+function M.setup(msvc)
     vim.api.nvim_create_user_command("Msvc", function(opts)
-        M.dispatch(opts)
+        local args = opts.fargs
+        if #args == 0 then
+            SUBCOMMANDS.help.run(msvc, {})
+            return
+        end
+        local sub = args[1]
+        local cmd = SUBCOMMANDS[sub]
+        if not cmd then
+            Log:error("msvc: unknown subcommand %q", sub)
+            return
+        end
+        local rest = {}
+        for i = 2, #args do
+            rest[#rest + 1] = args[i]
+        end
+        local ok, err = pcall(cmd.run, msvc, rest)
+        if not ok then
+            Log:error("msvc: %s", tostring(err))
+        end
     end, {
         nargs = "*",
-        bang = true,
-        desc = "MSVC build commands (use :Msvc help)",
-        complete = function(a, c, p)
-            return M.complete(a, c, p)
+        desc = "Visual Studio MSBuild driver",
+        complete = function(arglead, cmdline, cursorpos)
+            return complete(msvc, arglead, cmdline, cursorpos)
         end,
     })
 end
 
--- Back-compat alias for the §1.5 plan wording.
-M.setup = M.register
-
--- Test seam: lets specs poke individual subcommands without re-registering.
-M.test = { subcommands = subcommands }
+M._SUBCOMMANDS = SUBCOMMANDS
+M._format_status = format_status
+M._complete = complete
 
 return M

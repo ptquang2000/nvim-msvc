@@ -1,99 +1,105 @@
-local TestUtils = require("msvc.test.utils")
+local helpers = require("msvc.test.utils")
 
-local uv = vim.uv or vim.loop
+describe("msvc.discover", function()
+    local Discover, Util
+    local tmpdir
 
-local function mktempdir()
-    local base = vim.fn.tempname()
-    vim.fn.mkdir(base, "p")
-    return base
-end
-
-local function touch(path)
-    local fd = assert(uv.fs_open(path, "w", 420))
-    uv.fs_close(fd)
-end
-
-local function rmrf(dir)
-    vim.fn.delete(dir, "rf")
-end
-
-describe("msvc.discover.find_vcxprojs", function()
     before_each(function()
-        TestUtils.reset()
+        helpers.reset()
+        Discover = require("msvc.discover")
+        Util = require("msvc.util")
+        tmpdir = vim.fn.tempname()
+        vim.fn.mkdir(tmpdir, "p")
     end)
 
-    it("filters CMake meta-targets case-insensitively", function()
-        local Discover = require("msvc.discover")
-        local Util = require("msvc.util")
-        local dir = mktempdir()
-        local kept = Util.join_path(dir, "mylib.vcxproj")
-        local also_kept = Util.join_path(dir, "libwaacd.vcxproj")
-        local meta = {
-            "ALL_BUILD.vcxproj",
-            "ZERO_CHECK.vcxproj",
-            "install.vcxproj", -- lowercase
-            "RUN_TESTS.vcxproj",
-            "Package.vcxproj", -- mixed case
-            "RESTORE.vcxproj",
-            "Continuous.vcxproj",
-            "Experimental.vcxproj",
-            "Nightly.vcxproj",
-            "NIGHTLYMEMORYCHECK.vcxproj",
-        }
-        touch(kept)
-        touch(also_kept)
-        for _, m in ipairs(meta) do
-            touch(Util.join_path(dir, m))
+    after_each(function()
+        if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+            vim.fn.delete(tmpdir, "rf")
         end
-
-        local found = Discover.find_vcxprojs(dir)
-        local norm_kept = Util.normalize_path(kept)
-        local norm_also = Util.normalize_path(also_kept)
-        table.sort(found)
-        local expected = { norm_also, norm_kept }
-        table.sort(expected)
-        assert.same(expected, found)
-
-        rmrf(dir)
     end)
 
-    it("respects filter_meta_targets=false to return everything", function()
-        local Discover = require("msvc.discover")
-        local Util = require("msvc.util")
-        local dir = mktempdir()
-        touch(Util.join_path(dir, "mylib.vcxproj"))
-        touch(Util.join_path(dir, "ALL_BUILD.vcxproj"))
+    local function write(path, body)
+        vim.fn.mkdir(Util.dirname(path), "p")
+        local fh = io.open(path, "wb")
+        fh:write(body)
+        fh:close()
+    end
 
-        local found =
-            Discover.find_vcxprojs(dir, { filter_meta_targets = false })
-        assert.are.equal(2, #found)
-
-        rmrf(dir)
+    it("find_solution walks up to find a unique .sln", function()
+        local sub = Util.join_path(tmpdir, "a", "b")
+        vim.fn.mkdir(sub, "p")
+        write(Util.join_path(tmpdir, "Foo.sln"), "")
+        local found, err = Discover.find_solution(sub)
+        assert.is_nil(err)
+        assert.are.equal(
+            Util.normalize_path(Util.join_path(tmpdir, "Foo.sln")),
+            found
+        )
     end)
 
-    it("exposes CMAKE_META_TARGETS as a public constant", function()
-        local Discover = require("msvc.discover")
-        assert.is_table(Discover.CMAKE_META_TARGETS)
-        local names = {}
-        for _, n in ipairs(Discover.CMAKE_META_TARGETS) do
-            names[n] = true
+    it("find_solution returns ambiguity error on multiple .sln", function()
+        write(Util.join_path(tmpdir, "A.sln"), "")
+        write(Util.join_path(tmpdir, "B.sln"), "")
+        local found, err = Discover.find_solution(tmpdir)
+        assert.is_nil(found)
+        assert.is_string(err)
+    end)
+
+    it("parse_solution_projects extracts vcxproj entries", function()
+        local sln_path = Util.join_path(tmpdir, "S.sln")
+        local proj_dir = Util.join_path(tmpdir, "P")
+        vim.fn.mkdir(proj_dir, "p")
+        write(Util.join_path(proj_dir, "P.vcxproj"), "")
+        write(
+            sln_path,
+            table.concat({
+                "Microsoft Visual Studio Solution File, Format Version 12.00",
+                "Project(\"{8BC9CEB8}\") = \"P\", \"P\\P.vcxproj\", \"{deadbeef}\"",
+                "EndProject",
+                "Project(\"{XXX}\") = \"Csharp\", \"Csharp\\C.csproj\", \"{cafe}\"",
+                "EndProject",
+            }, "\r\n")
+        )
+        local out = Discover.parse_solution_projects(sln_path)
+        assert.are.equal(1, #out)
+        assert.are.equal("P", out[1].name)
+        assert.are.equal(
+            Util.normalize_path(Util.join_path(proj_dir, "P.vcxproj")),
+            out[1].path
+        )
+    end)
+
+    it("discover_targets falls back to defaults when nothing parses", function()
+        local r = Discover.discover_targets(nil, nil)
+        assert.is_true(#r.configurations >= 2)
+        assert.is_true(#r.platforms >= 2)
+    end)
+
+    it("discover_targets parses sln SolutionConfigurationPlatforms", function()
+        local sln = Util.join_path(tmpdir, "S.sln")
+        write(
+            sln,
+            table.concat({
+                "Global",
+                "  GlobalSection(SolutionConfigurationPlatforms) = preSolution",
+                "    Debug|x64 = Debug|x64",
+                "    Release|Win32 = Release|Win32",
+                "  EndGlobalSection",
+                "EndGlobal",
+            }, "\n")
+        )
+        local r = Discover.discover_targets(sln, nil)
+        local has = function(t, v)
+            for _, x in ipairs(t) do
+                if x == v then
+                    return true
+                end
+            end
+            return false
         end
-        for _, expected in ipairs({
-            "ALL_BUILD",
-            "ZERO_CHECK",
-            "INSTALL",
-            "PACKAGE",
-            "RUN_TESTS",
-            "RESTORE",
-            "Continuous",
-            "Experimental",
-            "Nightly",
-            "NightlyMemoryCheck",
-        }) do
-            assert.is_true(
-                names[expected] == true,
-                "missing meta target: " .. expected
-            )
-        end
+        assert.is_true(has(r.configurations, "Debug"))
+        assert.is_true(has(r.configurations, "Release"))
+        assert.is_true(has(r.platforms, "x64"))
+        assert.is_true(has(r.platforms, "Win32"))
     end)
 end)

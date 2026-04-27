@@ -1,6 +1,3 @@
-if vim.g.loaded_msvc == 1 then
-    return
-end
-vim.g.loaded_msvc = 1
-
-require("msvc.commands").register()
+-- The :Msvc user command is created by `require("msvc").setup({...})`.
+-- This file is intentionally empty so the plugin does nothing until the
+-- user calls setup, matching harpoon2's lazy-init style.

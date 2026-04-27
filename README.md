@@ -1,20 +1,18 @@
 # nvim-msvc
 
-A **Windows-only** Neovim plugin that wraps `MSBuild.exe` and the MSVC
-developer environment (`vswhere.exe`, `vcvarsall.bat`, `cl.exe`, `link.exe`,
-`INCLUDE`, `LIB`, …) into a first-class async build workflow with quickfix
-streaming, solution / project discovery, and cancellable jobs.
+A **Windows-only** Neovim plugin that wraps `MSBuild.exe` and the Visual
+Studio developer environment (`vswhere.exe`, `vcvarsall.bat`) into a
+small, async, build/cancel/quickfix workflow modelled after
+[harpoon2](https://github.com/ThePrimeagen/harpoon/tree/harpoon2).
 
 ## Requirements
 
-- **Windows** (the plugin is Windows-only; PowerShell is the dev tooling).
-- **Neovim ≥ 0.10** (uses `vim.system` for async jobs).
-- **Visual Studio 2019 or 2022** with the **Desktop development with C++**
-  workload installed, providing the **VC++ x64 build tools** (component id
-  `Microsoft.VisualStudio.Component.VC.Tools.x86.x64`) and `MSBuild.exe`.
-- **`vswhere.exe`** is optional but strongly recommended; without it the
-  plugin falls back to `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer`.
-  Visual Studio 2017 Update 2+ ships `vswhere` automatically.
+- **Windows**, **Neovim ≥ 0.10** (uses `vim.system`).
+- **Visual Studio 2017+** with the **Desktop development with C++**
+  workload (so `vcvarsall.bat`, `MSBuild.exe`, `cl.exe`, `link.exe` exist).
+- `vswhere.exe` (ships with VS 2017 Update 2+).
+- *Optional:* [`msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
+  on `PATH` to auto-generate `compile_commands.json` after each build.
 
 ## Installation
 
@@ -24,399 +22,80 @@ streaming, solution / project discovery, and cancellable jobs.
 {
     "ptquang2000/nvim-msvc",
     cond = function() return vim.fn.has("win32") == 1 end,
-    ft = { "c", "cpp", "cs" },
     cmd = "Msvc",
     config = function()
-        require("msvc").setup({})
+        require("msvc").setup({
+            settings = {
+                default_profile = "release",
+                compile_commands = { builddir = "bin/cmake", outdir = "bin" },
+            },
+            default = {
+                msbuild_args = { "/nologo", "/v:minimal" },
+                jobs = 6,
+            },
+            profiles = {
+                release = { configuration = "Release", platform = "x64" },
+                debug   = { configuration = "Debug",   platform = "x64" },
+            },
+        })
     end,
 }
 ```
 
-## Quickstart
-
-```lua
-require("msvc").setup({})
-```
-
-Then, inside any directory containing a `.sln` or `.vcxproj`:
-
-```vim
-:Msvc profile debug_x64
-:Msvc build
-```
-
-`:Msvc build` and `:Msvc compile` both require an active profile. The
-profile's dev-env fields (`arch`, `host_arch`, `vcvars_ver`, `winsdk`,
-`vs_*`, …) supply the dev env when needed. The compile_commands
-extractor always receives a fully-resolved developer-prompt env so
-MSBuildLocator can find MSBuild without a standalone .NET SDK.
-
-`:Msvc build` will auto-discover the solution, resolve the MSVC dev
-environment from the active profile, spawn `MSBuild.exe`
-asynchronously, stream output to the build-log buffer, and publish
-errors/warnings to the quickfix list.
-
 ## Configuration
 
-The full default schema (extracted from `lua/msvc/config.lua`):
+The schema mirrors harpoon2's `default + entries` pattern. Three top-level
+keys:
 
-```lua
-require("msvc").setup({
-    settings = {
-        notify_level    = vim.log.levels.INFO, -- min level for vim.notify()
-        echo_command    = false,               -- echo the MSBuild cmdline before spawn
-        build_on_save   = false,               -- BufWritePost autocmd triggers :Msvc build
-        open_quickfix   = true,                -- :copen after a failed build
-        qf_height       = 10,                  -- height of the quickfix split
-        auto_select_sln = true,                -- auto-pin the lone .sln in cwd on setup
-        search_depth    = 4,                   -- recursion depth for sln/vcxproj discovery
-        cache_env       = true,                -- persist resolved dev env across sessions
-        env_cache_path  = vim.fn.stdpath("cache") .. "/nvim-msvc-env.json",
-        last_log_path   = vim.fn.stdpath("cache") .. "/nvim-msvc-last.log",
-        default_profile = "base",              -- REQUIRED: name of root profile (must be a key under `profiles`)
-        on_build_start  = nil,                 -- fun(ctx)        — back-compat shim
-        on_build_done   = nil,                 -- fun(ctx, ok, ms) — back-compat shim
-        on_build_cancel = nil,                 -- fun(ctx)        — back-compat shim
+| Key        | Purpose                                                                                |
+|------------|----------------------------------------------------------------------------------------|
+| `settings` | Plugin-wide knobs: `default_profile`, `log_level`, `build_on_save`, `compile_commands` |
+| `default`  | Profile fields merged under **every** named profile                                    |
+| `profiles` | Map of profile name → profile fields. `configuration` and `platform` are **required**  |
 
-        -- compile_commands.json generation via the upstream
-        -- microsoft/msbuild-extractor-sample tool. The
-        -- `msbuild-extractor-sample` executable must be on PATH (matches
-        -- nvim-treesitter's `tree-sitter` CLI model — the binary is
-        -- implicit and not configurable). When found, it is invoked
-        -- automatically after every successful `:Msvc build`; when
-        -- missing, the build still succeeds and a one-time warning is
-        -- logged.
-        compile_commands = {
-            enabled    = true,                 -- auto-run after a successful build
-            outdir     = nil,                  -- output dir for compile_commands.json
-                                               --   (defaults to the .sln's directory;
-                                               --    relative paths resolve to sln/proj/cwd)
-            builddir   = nil,                  -- if set, recursively scan for *.vcxproj
-                                               --   under it and merge into the main file
-                                               --   (relative paths resolve to sln/proj/cwd)
-            merge      = true,                 -- pass --merge to the extractor
-            deduplicate = true,                -- pass --deduplicate to the extractor
-            extra_args = nil,                  -- extra extractor flags (e.g. { "--validate" })
-        },
-    },
+### Profile fields
 
-    -- All profiles live under `profiles`. The profile named by
-    -- `settings.default_profile` (required) doubles as the *root*
-    -- profile: it is activated on setup AND merged underneath every
-    -- other named profile, so it's where shared dev-env / MSBuild
-    -- settings go. Pick a different named profile at runtime with
-    -- `:Msvc profile <name>`.
-    profiles = {
-        base = {
-            vs_version       = "latest",           -- vswhere -version filter; see notes below
-            -- Tab-completion suggests only canonical vswhere inputs:
-            --   "latest", each install's full installationVersion
-            --   ("17.14.37216.2"), and major-range syntax ("[17.0,18.0)").
-            -- Marketing-year ("2017"/"2022") and bare-major ("15"/"17")
-            -- shorthands are still accepted as freehand input — they are
-            -- translated by `vswhere.translate_version` before being
-            -- passed to vswhere.exe — they are simply not surfaced in
-            -- the completion menu.
-            -- Accepted values:
-            --   "latest" / "any" / nil  → no -version filter
-            --   "2015"/"2017"/"2019"/"2022" → expanded to that VS year only
-            --                                 (e.g. "2017" → "[15.0,16.0)")
-            --   "14"/"15"/"16"/"17"/"18"    → expanded to that exact major
-            --                                 (e.g. "17" → "[17.0,18.0)" — VS 2022 ONLY,
-            --                                  NOT vswhere's >=17 default)
-            --   full semver ("17.8.34330.188") → wrapped as closed-closed exact-match
-            --                                    range ("[17.8.34330.188,17.8.34330.188]")
-            --                                    so vswhere pins to that exact install
-            --                                    (raw `-version X.Y.Z` would mean `>= X.Y.Z`
-            --                                    and silently pick a newer install).
-            --   range ("[17.0,18.0)") → passed through verbatim
-            vs_prerelease    = false,              -- include preview channel installs
-            vs_products = {                        -- vswhere -products filter
-                "Microsoft.VisualStudio.Product.Community",
-                "Microsoft.VisualStudio.Product.Professional",
-                "Microsoft.VisualStudio.Product.Enterprise",
-                "Microsoft.VisualStudio.Product.BuildTools",
-            },
-            vs_requires = {                        -- vswhere -requires filter
-                "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-            },
-            vswhere_path     = nil,                -- explicit path; nil = auto-detect
-            arch             = "x64",              -- target arch for vcvarsall (x64/x86/arm64)
-            host_arch        = "x64",              -- host arch for vcvarsall
-            msbuild_args     = { "/nologo", "/v:minimal" }, -- always-on MSBuild args
-            jobs             = 0,                  -- /m:N   (0 = MSBuild default)
-            -- vcvars_ver = "14.39",            -- pin a specific toolset (optional)
-            -- winsdk = "10.0.22621.0",         -- pin a Windows SDK version (optional)
-            -- vcvars_spectre_libs = "spectre", -- spectre|spectre_load|spectre_load_cf
-        },
+Every field is optional except `configuration` and `platform`. They are
+shallow-merged in this order: **named profile** → **`default`**.
 
-        -- A named profile holds the full field set (MSBuild parameters
-        -- and dev-env parameters together). Anything not declared on
-        -- the profile is inherited from the root profile (here `base`).
-        debug_x64 = {
-            configuration = "Debug",               -- /p:Configuration=
-            platform      = "x64",                 -- /p:Platform=
-            jobs          = 0,                     -- /m:N
-        },
-        release_x64 = {
-            configuration = "Release",
-            platform      = "x64",
-            msbuild_args  = { "/nologo", "/v:minimal", "/p:RunCodeAnalysis=false" },
-            vcvars_ver    = "14.39",               -- override the inherited toolset
-        },
-        arm64_release = {
-            configuration = "Release",
-            platform      = "ARM64",
-            arch          = "arm64",
-            host_arch     = "x64",
-        },
-    },
-})
+| Field           | Type      | Notes                                                                |
+|-----------------|-----------|----------------------------------------------------------------------|
+| `configuration` | string    | `Debug` / `Release` / ... (auto-completed from `.sln` / `.vcxproj`)  |
+| `platform`      | string    | `Win32` / `x64` / `ARM64` (auto-completed from `.sln` / `.vcxproj`)  |
+| `arch`          | string    | `x86` / `x64` / `arm` / `arm64`. Toolchain arch passed to vcvarsall  |
+| `msbuild_args`  | string[]  | Extra MSBuild flags, verbatim (e.g. `{ "/nologo", "/v:minimal" }`)   |
+| `jobs`          | integer   | Translated to MSBuild `/m:<n>`                                       |
+| `target`        | string    | Default MSBuild `/t:<name>`. Overridden by `:Msvc build [target]`    |
+| `vs_version`    | string    | `latest` / `2017` / `2019` / `2022` / `17` / `17.10` / `[a,b]` range |
+| `vs_prerelease` | boolean   | Include prerelease installs in vswhere lookup                        |
+| `vs_products`   | string[]  | vswhere `-products`                                                  |
+| `vs_requires`   | string[]  | vswhere `-requires`                                                  |
+| `vswhere_path`  | string    | Explicit `vswhere.exe` path                                          |
+| `vcvars_ver`    | string    | Pin MSVC toolset (e.g. `14.16`). Auto-completed from VC\Tools\MSVC   |
+| `winsdk`        | string    | Pin Windows SDK (e.g. `10.0.17763.0`). Auto-completed from registry  |
+
+## Subcommands
+
+```
+:Msvc                       same as :Msvc help
+:Msvc help                  list subcommands
+:Msvc status                show solution/project/profile/install
+:Msvc build [target]        run MSBuild (target overrides the default)
+:Msvc rebuild               MSBuild /t:Rebuild
+:Msvc clean                 MSBuild /t:Clean
+:Msvc cancel                kill the in-flight build
+:Msvc profile [name]        switch active profile (no arg → list)
+:Msvc project [path|-]      pin a .vcxproj as the build target ('-' clears)
+:Msvc update <field> <val>  override a profile field for this session
+:Msvc discover              re-scan cwd for a .sln
+:Msvc log                   open the live build-log buffer
 ```
 
-Activate a profile before building. `:Msvc compile` additionally
-sources the dev env from the active profile:
+`:Msvc update <field>` and `:Msvc profile <name>` autocomplete from
+`vswhere`, the filesystem, and the active solution/project.
 
-```vim
-:Msvc profile debug_x64
-:Msvc build
-:Msvc compile
-```
+## Health
 
-`settings.default_profile` is **required** and must match a key in
-`profiles`. On the first `setup()` call, that profile is activated
-automatically — no explicit `:Msvc profile` is needed to get going.
-Other named profiles layer on top of it during build resolution.
-`setup()` also kicks off two asynchronous warms in the background — `setup()`
-returns immediately and they fill in before you trigger a build:
-
-1. **`vswhere`** — kicked off as **two independent async calls** that run
-   in parallel and never block each other:
-   * **Unfiltered warm** (no `vs_version` / `vs_products` /
-     `vs_requires`, `prerelease=true`) feeds the
-     `vs_completion_candidates` table that drives `:Msvc update <vs_*>
-     <Tab>`. The menu therefore lists every install on the machine —
-     it never shrinks after `:Msvc update vs_version <X>` selects one.
-   * **Filtered resolve** (active profile filters) populates
-     `state.install_path` plus the friendly metadata
-     (`install_display_name`, `install_version`,
-     `install_product_line_version`) consumed by `:Msvc status`.
-2. **Project scan** — parses the active `.sln` plus its referenced
-   `.vcxproj` files (or, when no solution is pinned, a depth-2 walk of
-   cwd) for `Configuration|Platform` tuples, populating the dynamic
-   `configuration` / `platform` completion lists.
-
-> **Migration note (vNEXT):** the `install_path` profile field has been
-> removed. Set `vs_version` (e.g. `"17"` / `"2022"` / `"latest"`) and/or
-> `vswhere_path` instead. Existing configs that still set
-> `profiles.<x>.install_path` log a one-line deprecation warning at
-> setup time and ignore the value.
-
-Merging uses `vim.tbl_extend("force", ...)` — **never recursive**, so array values
-(`vs_products`, `msbuild_args`, …) are replaced wholesale.
-
-## Commands
-
-All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
-`:Telescope` / `:Lazy`):
-
-- `:Msvc build [target]` — Build the active solution. If a project has
-  been pinned via `:Msvc project <name>`, builds that `.vcxproj` instead
-  (with `/p:SolutionDir=<sln-dir>\` so `$(SolutionDir)`-relative paths
-  still resolve). Optional MSBuild target: `Build` / `Rebuild` / `Clean`.
-  Requires an active profile.
-- `:Msvc rebuild` — Run MSBuild with `target=Rebuild`.
-- `:Msvc clean` — Run MSBuild with `target=Clean`.
-- `:Msvc cancel` — Cancel the in-flight MSBuild invocation
-  (`taskkill /T /F /PID …`).
-- `:Msvc status` — Echo solution / project / install snapshot plus the
-  active profile's full field listing. The install line shows the
-  friendly version when known:
-  ```
-  install  = Visual Studio Professional 2022 (17.14.37216.2)
-  path     = C:\Program Files\Microsoft Visual Studio\2022\Professional
-  ```
-  When no install metadata is cached the line falls back to the bare
-  path (`install  = C:\…`) or `install  = <none>`.
-- `:Msvc log` — Open the build log: live tail while a build is running,
-  otherwise the most recent build's captured output.
-- `:Msvc profile <name>` — Set (or show) the active named profile from
-  `config.profiles`. A profile holds both MSBuild settings
-  (`configuration`, `platform`, `target`, `msbuild_args`, `jobs`, ...)
-  and dev-env parameters (`arch`, `host_arch`, `vcvars_ver`, `winsdk`,
-  `vcvars_spectre_libs`, `vs_*`, `vswhere_path`) on the
-  same flat table. Setting a profile logs the full merged field set,
-  sorted, one `key = value` per line; showing it without an argument
-  does the same for the active profile.
-- `:Msvc update <property> <value>` — Override a single property on the
-  active profile. All profile properties live on the same flat table:
-  `configuration`, `platform`, `target`, `verbosity`, `msbuild_args`,
-  `jobs`, `max_cpu_count`, `no_logo`, `extra_args`, `arch`, `host_arch`,
-  `vcvars_ver`, `winsdk`, `vcvars_spectre_libs`, `vs_version`,
-  `vs_prerelease`, `vs_products`, `vs_requires`, `vswhere_path`.
-  Booleans
-  accept `true`/`false`/`1`/`0`/`yes`/`no`. Tables accept comma-separated
-  values. Both arguments are tab-completed — property names plus
-  candidate values from a layered selection chain:
-    1. **Async-warmed dynamic source.** `vs_version` / `vs_products` /
-       `vs_requires` come from the `vswhere` results captured at
-       setup; `configuration` / `platform` come from the parsed
-       `.sln` / `.vcxproj` set.
-    2. **Static fallback.** A small, well-known list (e.g. `Debug` /
-       `Release`, `Win32` / `x64`, `latest`) used while the async
-       warms are still in flight or when no project is pinned —
-       completion never returns empty for a known property.
-    3. **Registry / filesystem providers.** `vcvars_ver` (scans
-       `<install_path>\VC\Tools\MSVC`) and `winsdk` (queries
-       `HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots`,
-       with a filesystem fallback).
-  `vcvars_spectre_libs` completes to `spectre`,
-  `spectre_load`, `spectre_load_cf`. Overrides are **transient** — they
-  live on top of the configured baseline and are cleared whenever the
-  profile is re-selected via `:Msvc profile`.
-  Passing `install_path` is rejected with a deprecation warning — set
-  `vs_version` / `vswhere_path` instead.
-- `:Msvc project [name]` — Pin a single project (subset of the loaded
-  solution) so subsequent builds target only that `.vcxproj`. Tab
-  completion lists the project names parsed from the active `.sln`
-  during setup. Pass no argument (or the synthetic `<solution>`) to
-  clear the selection and have `:Msvc build` target the full solution
-  again.
-- `:Msvc discover` — Re-scan cwd for the parent `.sln` and refresh the
-  cached project list. Useful when you `:cd` into a different repo
-  during the same Neovim session.
-- `:checkhealth msvc` — Run the plugin health check (reports OS / Neovim version,
-  vswhere & MSBuild discovery, the active solution / project / profile,
-  and the `compile_commands.json` extractor configuration).
-- `:Msvc compile` — Compile the current buffer's source file (placeholder
-  hook; logs a warning until `Msvc:compile_current_file` lands). Requires
-  an active profile.
-- `:Msvc help` — List every `:Msvc` subcommand.
-
-## compile_commands.json
-
-If the
-[`msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
-executable is on `PATH`, nvim-msvc invokes it after every successful
-`:Msvc build` to (re)generate a clang-style `compile_commands.json`. The
-extractor never compiles anything — it only evaluates the project at
-design time and runs `GetClCommandLines`. Modeled on nvim-treesitter's
-`tree-sitter` CLI integration: the binary name is **implicit** and not
-configurable; when missing, the feature is a no-op and a one-time
-warning is logged. Use `:checkhealth msvc` to verify discovery.
-
-```lua
-require("msvc").setup({
-    settings = {
-        compile_commands = {
-            outdir   = "C:\\src\\myapp",             -- defaults to the .sln's directory
-            builddir = "C:\\src\\myapp\\out\\build", -- optional CMake / out-of-source build dir
-        },
-    },
-})
-```
-
-`outdir` (defaults to the active `.sln` directory) is where
-`compile_commands.json` is written. Both `outdir` and `builddir` accept
-either an absolute path or a relative one; relative paths are resolved
-against the active solution's directory, then the active project's
-directory, then Neovim's cwd (in that order). When `builddir` is set, every
-`*.vcxproj` discovered recursively under it is added as an extra
-`--project` input and merged into the same file via the tool's
-`--merge --deduplicate` modes — useful for CMake / GN trees that emit
-out-of-source `.vcxproj` files alongside the in-tree solution. CMake
-VS-generator meta-targets (`ALL_BUILD`, `ZERO_CHECK`, `INSTALL`,
-`PACKAGE`, `RUN_TESTS`, `RESTORE`, and the CTest dashboard targets) are
-filtered out of the builddir scan so the extractor never receives them.
-
-## Events
-
-`require("msvc.extensions").extensions:add_listener({ ... })` accepts a
-listener table whose keys are `event_names` (frozen). Payloads:
-
-| Event            | Payload                                            | Emitted from        |
-|------------------|----------------------------------------------------|---------------------|
-| `BUILD_START`    | `(ctx: MsvcBuildContext)`                          | `MsvcBuild:start`   |
-| `BUILD_OUTPUT`   | `(ctx, line: string, stream: "stdout"\|"stderr")`  | `MsvcBuild` job pipe|
-| `BUILD_DONE`     | `(ctx, ok: boolean, elapsed_ms: integer)`          | `MsvcBuild:_finish` |
-| `BUILD_CANCEL`   | `(ctx)`                                            | `MsvcBuild:cancel`  |
-| `ENV_RESOLVED`   | `(env: MsvcDevEnv)`                                | `devenv.resolve`    |
-| `STATE_CHANGED`  | `(field: string, old, new)`                        | `MsvcState`         |
-
-```lua
-local Ext = require("msvc.extensions")
-Ext.extensions:add_listener({
-    [Ext.event_names.BUILD_DONE] = function(ctx, ok, ms)
-        vim.notify(("build %s in %d ms"):format(ok and "OK" or "FAILED", ms))
-    end,
-})
-```
-
-## Lua API
-
-`require("msvc")` returns the `Msvc` singleton. Public methods:
-
-- `msvc:setup(partial_config?)` — Idempotent; merges config, registers
-  autocmds, wires back-compat callback shims.
-- `msvc:build(opts?)` — Async MSBuild; `opts.target` selects
-  `Build`/`Rebuild`/`Clean`. Returns the `MsvcBuild` instance.
-- `msvc:cancel_build()` — Cancel the in-flight build, if any.
-- `msvc:resolve(opts?)` — Resolve & cache the MSVC dev env from the
-  active profile (merged over the configured root profile); `opts.profile`
-  overrides the active profile, `opts.arch` overrides the resolved arch.
-- `msvc:status()` — Echo solution/project/install snapshot plus the
-  active profile's full field listing.
-- `msvc:set_profile(name)` — Switch the active named profile.
-- `msvc:set_project(name_or_path)` — Pin a project from the cached
-  `solution_projects` (or by `.vcxproj` path); pass `nil` to clear.
-- `msvc:auto_discover()` — Re-scan cwd for the parent `.sln` and refresh
-  the cached project list; returns the pinned solution path.
-- `msvc.log:show_build()` — Open the build log buffer (live tail while
-  building, last build's output otherwise).
-
-## Architecture
-
-Module-returns-singleton in `init.lua`; class-style modules with metatables
-for stateful pieces (`Msvc`, `MsvcLog`, `MsvcState`, `MsvcBuild`,
-`MsvcExtensions`); layered config (`settings` / root profile /
-named profile) merged non-recursively with
-`vim.tbl_extend("force", …)`; named-event bus
-(`MsvcExtensions:emit`) replacing ad-hoc callbacks; one shared `:Msvc`
-dispatcher with subcommand tab-completion replacing the old per-verb
-`:MS*` commands.
-
-## Development (Windows)
-
-Tooling is PowerShell — there is intentionally no Makefile, justfile, or
-shell script. From the repository root:
-
-```powershell
-./scripts/format.ps1   # stylua over lua/ and tests/
-./scripts/lint.ps1     # luacheck over lua/ and tests/
-./scripts/test.ps1     # plenary-busted headless tests
-./scripts/check.ps1    # format-check + lint + test (CI-equivalent)
-```
-
-Run `./scripts/check.ps1` before sending a PR; it must exit 0.
-
-## Troubleshooting
-
-- **`vswhere.exe not found`** — Either install Visual Studio 2017 Update 2+
-  (which ships `vswhere`), or set `vswhere_path` on your default profile in
-  `setup` to an explicit path. The fallback search location is
-  `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`.
-- **`MSBuild.exe not found`** — Confirm the **Desktop development with C++**
-  workload is installed and the resolved install matches `vs_version` /
-  `vs_products` / `vs_requires`. Run `:Msvc profile <name>` then
-  `:Msvc status` to inspect what was discovered, or `:Msvc log` for the
-  full trace.
-- **Cancelled build leaves orphan `cl.exe` / `link.exe` processes** —
-  `:Msvc cancel` invokes `taskkill /T /F /PID <msbuild-pid>` which kills the
-  whole tree. If a runaway compiler survives (e.g. because MSBuild had
-  already detached it), kill it manually with
-  `taskkill /T /F /PID <pid>` — never `Stop-Process -Name` (it can match
-  unrelated processes).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+`:checkhealth msvc` reports environment, configuration, vswhere /
+MSBuild discovery, current state, and the `compile_commands.json`
+extractor.

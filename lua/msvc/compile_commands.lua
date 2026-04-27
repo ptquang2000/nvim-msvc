@@ -1,15 +1,5 @@
--- msvc.compile_commands: integration with the msbuild-extractor-sample tool
--- (https://github.com/microsoft/msbuild-extractor-sample) used to derive a
--- clang-style compile_commands.json from a Visual C++ solution / project
--- tree without invoking the real compiler.
---
--- Modeled on nvim-treesitter's `tree-sitter` CLI integration: the
--- `msbuild-extractor-sample` executable is *implicit* — it must be on PATH
--- and is not configurable. The feature is enabled by default and
--- automatically runs after a successful `:Msvc build`; if the binary is
--- missing the run is skipped (with a single warning) so the build itself
--- is unaffected. See `:checkhealth msvc` for a quick way to confirm the
--- tool is discoverable.
+-- msvc.compile_commands — drive `msbuild-extractor-sample` to produce a
+-- compile_commands.json after a successful :Msvc build.
 
 local Util = require("msvc.util")
 local Log = require("msvc.log")
@@ -17,15 +7,8 @@ local Discover = require("msvc.discover")
 
 local M = {}
 
---- Name of the extractor executable. Intentionally hardcoded — to match
---- nvim-treesitter's `tree-sitter-cli` model the binary must live on PATH
---- and is not exposed as a config option.
 M.EXTRACTOR_BIN = "msbuild-extractor-sample"
 
---- Resolve `msbuild-extractor-sample` on PATH. Returns the absolute path
---- when found, nil otherwise. Result is cached on the module to avoid
---- re-running `exepath` for every build.
----@return string|nil
 function M.find_extractor()
     if M._extractor_path ~= nil then
         return M._extractor_path or nil
@@ -39,71 +22,35 @@ function M.find_extractor()
     return nil
 end
 
---- Reset the cached extractor lookup. Tests / `:checkhealth` may call
---- this so subsequent runs re-probe PATH.
 function M.reset_cache()
     M._extractor_path = nil
+    M._missing_warned = nil
 end
 
---- True when the compile_commands integration should run after a
---- successful build. Default ON; users opt out with
---- `settings.compile_commands.enabled = false`. Discovery of the
---- extractor binary itself happens lazily in `generate` so that a
---- missing tool only logs once instead of disabling the feature
---- silently.
----@param cc table|nil
----@return boolean
 function M.is_enabled(cc)
     if type(cc) ~= "table" then
         return true
     end
-    if cc.enabled == false then
-        return false
-    end
-    return true
+    return cc.enabled ~= false
 end
 
---- Resolve the directory to anchor a relative `builddir` / `outdir` against.
---- Priority: solution dir → project dir → cwd. Always returns a non-empty
---- normalized absolute path (cwd is the floor). The anchor is ONLY used
---- when the user-supplied path is relative; absolute paths are passed
---- through unchanged.
----@param solution string|nil
----@param project string|nil
----@return string
 local function resolve_anchor(solution, project)
-    if solution and solution ~= "" then
-        local d = Util.dirname(solution)
-        if d and d ~= "" then
-            return Util.normalize_path(d) or d
-        end
-    end
-    if project and project ~= "" then
-        local d = Util.dirname(project)
-        if d and d ~= "" then
-            return Util.normalize_path(d) or d
+    for _, p in ipairs({ solution, project }) do
+        if p and p ~= "" then
+            local d = Util.dirname(p)
+            if d and d ~= "" then
+                return Util.normalize_path(d) or d
+            end
         end
     end
     local cwd = (vim.uv and vim.uv.cwd and vim.uv.cwd()) or vim.fn.getcwd()
     return Util.normalize_path(cwd) or cwd
 end
 
---- Resolve the output path for compile_commands.json. When `outdir` is
---- relative, it is anchored to the solution / project / cwd (in that
---- order). When unset, falls back to the same anchor directly. Creates
---- the directory tree if missing.
----@param outdir string|nil
----@param solution string|nil
----@param project string|nil
----@return string|nil path
 local function resolve_outpath(outdir, solution, project)
     local anchor = resolve_anchor(solution, project)
-    local dir
-    if outdir and outdir ~= "" then
-        dir = Util.resolve_path(outdir, anchor)
-    else
-        dir = anchor
-    end
+    local dir = (outdir and outdir ~= "") and Util.resolve_path(outdir, anchor)
+        or anchor
     dir = Util.normalize_path(dir) or dir
     if dir == nil or dir == "" then
         return nil
@@ -117,13 +64,6 @@ local function resolve_outpath(outdir, solution, project)
     return Util.join_path(dir, "compile_commands.json")
 end
 
---- Recursively collect `*.vcxproj` paths under `builddir` for merging into
---- the main compile_commands.json. Empty/missing dirs return an empty list.
---- Relative `builddir` is anchored to the solution / project / cwd.
----@param builddir string|nil
----@param solution string|nil
----@param project string|nil
----@return string[]
 local function collect_builddir_vcxprojs(builddir, solution, project)
     if type(builddir) ~= "string" or builddir == "" then
         return {}
@@ -131,13 +71,6 @@ local function collect_builddir_vcxprojs(builddir, solution, project)
     local anchor = resolve_anchor(solution, project)
     local resolved = Util.resolve_path(builddir, anchor) or builddir
     local norm = Util.normalize_path(resolved) or resolved
-    if builddir ~= norm then
-        Log:debug(
-            "compile_commands: builddir %q → %s",
-            tostring(builddir),
-            tostring(norm)
-        )
-    end
     if not Util.is_dir(norm) then
         Log:warn(
             "compile_commands: builddir does not exist: %s",
@@ -148,23 +81,8 @@ local function collect_builddir_vcxprojs(builddir, solution, project)
     return Discover.find_vcxprojs(norm)
 end
 
---- Build the argv to invoke msbuild-extractor-sample. Mirrors the CLI in
---- the upstream README: `--solution`/`--project` are repeatable, `-c` and
---- `-a` carry the active configuration / platform, `-o` is the output
---- file, and `--merge --deduplicate` produces one entry per source file
---- when both the solution and individual vcxprojs are extracted.
----@param opts table
----@return string[]
 local function build_argv(opts)
-    local argv = {}
-    local extractor = opts.extractor
-    if type(extractor) == "string" then
-        argv[#argv + 1] = extractor
-    elseif type(extractor) == "table" then
-        for _, a in ipairs(extractor) do
-            argv[#argv + 1] = a
-        end
-    end
+    local argv = { opts.extractor }
     if opts.solution and opts.solution ~= "" then
         argv[#argv + 1] = "--solution"
         argv[#argv + 1] = opts.solution
@@ -181,25 +99,13 @@ local function build_argv(opts)
         argv[#argv + 1] = "-a"
         argv[#argv + 1] = opts.platform
     end
-    -- Point the extractor at the resolved VS installation root so its
-    -- internal MSBuildLocator picks the matching MSBuild + toolset
-    -- (e.g. VS 2017 Pro) instead of falling back to its default vswhere
-    -- "latest" lookup. The dev-prompt env (VSINSTALLDIR / INCLUDE / PATH
-    -- / ...) is still forwarded via `vim.system` so MSBuild's own
-    -- evaluation sees the right toolchain.
     if opts.vs_path and opts.vs_path ~= "" then
         argv[#argv + 1] = "--vs-path"
         argv[#argv + 1] = opts.vs_path
     end
     argv[#argv + 1] = "-o"
     argv[#argv + 1] = opts.outpath
-    -- Merge + deduplicate so the union of solution + builddir vcxprojs
-    -- produces a single, IntelliSense-friendly entry per source file.
-    local merge = true
-    if opts.merge == false then
-        merge = false
-    end
-    if merge then
+    if opts.merge ~= false then
         argv[#argv + 1] = "--merge"
     end
     if opts.deduplicate ~= false then
@@ -211,44 +117,20 @@ local function build_argv(opts)
     return argv
 end
 
---- Generate compile_commands.json by invoking msbuild-extractor-sample.
---- All inputs are validated; the spawn itself is asynchronous via
---- `vim.system`. `on_done(ok, outpath, code)` is invoked once the tool
---- exits (best-effort, scheduled on the main loop).
----@param opts table
----     @field solution string|nil
----     @field project string|nil       -- active project (.vcxproj)
----     @field extra_projects string[]|nil -- additional projects to pass
----                                        -- as --project (e.g. all
----                                        -- projects parsed from the
----                                        -- solution). Deduplicated
----                                        -- against `project` and the
----                                        -- builddir-discovered list.
----     @field configuration string
----     @field platform string
----     @field cc table -- settings.compile_commands
----     @field env table|nil -- developer-prompt env (PATH/INCLUDE/LIB/...) to
----                          -- inherit so MSBuild / .NET SDK lookups succeed
----                          -- even when nvim was launched outside a VS
----                          -- Developer PowerShell.
----     @field vs_path string|nil -- VS installation root forwarded to the
----                          -- extractor as `--vs-path` so it loads the
----                          -- matching MSBuild + toolset (e.g. VS 2017 Pro)
----                          -- instead of running its own vswhere lookup.
----     @field on_done fun(ok: boolean, outpath: string|nil, code: integer|nil)|nil
----@return boolean spawned
+--- Generate compile_commands.json. Async; spawns the extractor under the
+--- supplied dev-prompt env (required so MSBuildLocator finds MSBuild).
 function M.generate(opts)
     opts = opts or {}
     local cc = opts.cc or {}
     if not M.is_enabled(cc) then
         return false
     end
-    local solution = opts.solution
-    local project = opts.project
+    local solution, project = opts.solution, opts.project
     if (not solution or solution == "") and (not project or project == "") then
         Log:warn("compile_commands: no solution / project to extract from")
         return false
     end
+
     local outpath = resolve_outpath(cc.outdir, solution, project)
     if not outpath then
         Log:error(
@@ -257,6 +139,7 @@ function M.generate(opts)
         )
         return false
     end
+
     local projects = collect_builddir_vcxprojs(cc.builddir, solution, project)
     local seen = {}
     for _, p in ipairs(projects) do
@@ -277,40 +160,25 @@ function M.generate(opts)
         seen[key] = true
         projects[#projects + 1] = norm
     end
-    -- Always include the active project. The extractor's solution-mode
-    -- pass yields very few flags for some project types (notably WDK
-    -- kernel-mode driver projects), so we extract the active project
-    -- separately too and let `--deduplicate` keep the richer entry.
     add_project(project)
-    -- Include every project parsed from the solution. This makes the
-    -- extractor produce a per-project compile_commands entry for each
-    -- one in addition to the solution-level pass, again merged via
-    -- `--deduplicate`. Callers without a parsed solution list pass nil.
     if type(opts.extra_projects) == "table" then
         for _, p in ipairs(opts.extra_projects) do
             add_project(p)
         end
     end
+
     local exe = M.find_extractor()
     if not exe then
         if not M._missing_warned then
             M._missing_warned = true
             Log:warn(
-                "compile_commands: %s not found on PATH — install it from https://github.com/microsoft/msbuild-extractor-sample to enable compile_commands.json generation",
+                "compile_commands: %s not found on PATH — install from https://github.com/microsoft/msbuild-extractor-sample",
                 M.EXTRACTOR_BIN
             )
         end
         return false
     end
-    -- Pin the extractor to the VS install we resolved (`state.install_path`)
-    -- so it loads the matching MSBuild + toolset rather than running its
-    -- own vswhere "latest" lookup. The dev-prompt env we forward via
-    -- vim.system populates VSINSTALLDIR / INCLUDE / PATH for the actual
-    -- MSBuild evaluation.
-    local vs_path
-    if type(opts.vs_path) == "string" and opts.vs_path ~= "" then
-        vs_path = opts.vs_path
-    end
+
     local argv = build_argv({
         extractor = exe,
         solution = solution,
@@ -321,34 +189,20 @@ function M.generate(opts)
         merge = cc.merge,
         deduplicate = cc.deduplicate,
         extra_args = cc.extra_args,
-        vs_path = vs_path,
+        vs_path = opts.vs_path,
     })
-
     Log:info(
-        "compile_commands: generating %s (%d extra projects from builddir)",
+        "compile_commands: generating %s (%d project(s))",
         outpath,
         #projects
     )
     Log:debug("compile_commands: argv = %s", vim.inspect(argv))
 
-    -- Remove any stale compile_commands.json before invoking the
-    -- extractor so each build produces a fresh file. Without this, files
-    -- removed from the build (or projects unloaded from the solution)
-    -- would linger in the previous output. The extractor itself
-    -- overwrites on success, but we delete eagerly so a failed run
-    -- leaves no misleading stale data behind either.
     if vim.uv and vim.uv.fs_unlink then
         pcall(vim.uv.fs_unlink, outpath)
-    elseif vim.loop and vim.loop.fs_unlink then
-        pcall(vim.loop.fs_unlink, outpath)
     end
 
     local on_done = opts.on_done
-    -- Inherit the resolved MSVC developer environment so the extractor's
-    -- MSBuildLocator can find MSBuild, and so hostfxr can resolve a .NET
-    -- SDK / runtime via the dev-prompt PATH. Without this, launching
-    -- Neovim from a vanilla shell yields the upstream error:
-    --   "No .NET SDKs were found" / unhandled CLR exception 0xE0434352.
     local sys_opts = { text = true }
     if type(opts.env) == "table" and next(opts.env) ~= nil then
         sys_opts.env = opts.env
@@ -360,16 +214,12 @@ function M.generate(opts)
                 if ok then
                     Log:info("compile_commands: wrote %s", outpath)
                 else
-                    local code = res and res.code or -1
-                    local stderr = (res and res.stderr) or ""
                     Log:error(
-                        "compile_commands: extractor exited with code %d%s",
-                        code,
-                        (
-                            stderr ~= ""
-                                and (": " .. stderr:gsub("%s+$", ""))
+                        "compile_commands: extractor exit %d%s",
+                        res and res.code or -1,
+                        (res and res.stderr and res.stderr ~= "")
+                                and (": " .. res.stderr:gsub("%s+$", ""))
                             or ""
-                        )
                     )
                 end
                 if type(on_done) == "function" then
@@ -379,22 +229,17 @@ function M.generate(opts)
         end)
     end)
     if not ok_spawn then
-        Log:error(
-            "compile_commands: failed to spawn extractor: %s",
-            tostring(err)
-        )
+        Log:error("compile_commands: spawn failed: %s", tostring(err))
         return false
     end
     return true
 end
 
--- Test seam: expose internals so specs can assert argv composition without
--- spawning a real process.
 M._internal = {
     build_argv = build_argv,
     resolve_outpath = resolve_outpath,
-    collect_builddir_vcxprojs = collect_builddir_vcxprojs,
     resolve_anchor = resolve_anchor,
+    collect_builddir_vcxprojs = collect_builddir_vcxprojs,
 }
 
 return M

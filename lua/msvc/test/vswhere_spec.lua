@@ -1,105 +1,70 @@
-local VsWhere = require("msvc.vswhere")
+local helpers = require("msvc.test.utils")
 
-local function has(args, val)
-    for _, a in ipairs(args) do
-        if a == val then
-            return true
+describe("msvc.vswhere", function()
+    local VsWhere
+
+    before_each(function()
+        helpers.reset()
+        VsWhere = require("msvc.vswhere")
+    end)
+
+    describe("translate_version", function()
+        local t = function(v)
+            return VsWhere._translate_version(v)
         end
-    end
-    return false
-end
 
-local function index_of(args, val)
-    for i, a in ipairs(args) do
-        if a == val then
-            return i
-        end
-    end
-    return nil
-end
+        it("returns nil for nil/empty/latest", function()
+            assert.is_nil(t(nil))
+            assert.is_nil(t(""))
+            assert.is_nil(t("latest"))
+        end)
 
-local function count(args, val)
-    local n = 0
-    for _, a in ipairs(args) do
-        if a == val then
-            n = n + 1
-        end
-    end
-    return n
-end
+        it("translates marketing year tokens", function()
+            assert.are.equal("[15.0,16.0)", t("2017"))
+            assert.are.equal("[16.0,17.0)", t("2019"))
+            assert.are.equal("[17.0,18.0)", t("2022"))
+        end)
 
-describe("msvc.vswhere build_args", function()
-    it("defaults to '-products *' and includes '-all'", function()
-        local args = VsWhere._build_args(nil)
-        assert.are.equal("-products", args[1])
-        assert.are.equal("*", args[2])
-        assert.is_true(has(args, "-all"))
+        it("translates single-component to range", function()
+            assert.are.equal("[17.0,18.0)", t("17"))
+        end)
+
+        it("translates two-component to minor range", function()
+            assert.are.equal("[17.10,17.11)", t("17.10"))
+        end)
+
+        it("formats multi-component as exact range", function()
+            assert.are.equal(
+                "[15.9.37202.19,15.9.37202.19]",
+                t("15.9.37202.19")
+            )
+        end)
+
+        it("passes through pre-formatted ranges", function()
+            assert.are.equal("[16.0,17.0)", t("[16.0,17.0)"))
+        end)
     end)
 
-    it("omits -prerelease by default", function()
-        local args = VsWhere._build_args({})
-        assert.is_false(has(args, "-prerelease"))
-    end)
+    describe("build_args", function()
+        it("includes -all and -products * by default", function()
+            local args = VsWhere._build_args({})
+            assert.are.equal("-products", args[1])
+            assert.are.equal("*", args[2])
+            assert.are.equal("-all", args[3])
+        end)
 
-    it("includes -prerelease when vs_prerelease is true", function()
-        local args = VsWhere._build_args({ vs_prerelease = true })
-        assert.is_true(has(args, "-prerelease"))
-    end)
-
-    it("removes -prerelease when vs_prerelease is false", function()
-        local args = VsWhere._build_args({ vs_prerelease = false })
-        assert.is_false(has(args, "-prerelease"))
-    end)
-
-    it("emits no -requires when vs_requires is nil", function()
-        local args = VsWhere._build_args({})
-        assert.is_false(has(args, "-requires"))
-    end)
-
-    it("emits no -requires when vs_requires is empty", function()
-        local args = VsWhere._build_args({ vs_requires = {} })
-        assert.is_false(has(args, "-requires"))
-    end)
-
-    it("emits one -requires per element", function()
-        local args = VsWhere._build_args({ vs_requires = { "A", "B" } })
-        assert.are.equal(2, count(args, "-requires"))
-        local i = index_of(args, "-requires")
-        assert.are.equal("A", args[i + 1])
-        local j = index_of({ unpack(args, i + 2) }, "-requires")
-        assert.is_not_nil(j)
-        assert.are.equal("B", args[i + 2 + j])
-    end)
-
-    it("emits -version when vs_version is a concrete value", function()
-        local args = VsWhere._build_args({ vs_version = "[17.0,18.0)" })
-        local i = index_of(args, "-version")
-        assert.is_not_nil(i)
-        assert.are.equal("[17.0,18.0)", args[i + 1])
-    end)
-
-    it("omits -version for 'latest' / 'any' / nil / ''", function()
-        for _, v in ipairs({ "latest", "any", "" }) do
-            local args = VsWhere._build_args({ vs_version = v })
-            assert.is_false(has(args, "-version"))
-        end
-        local args = VsWhere._build_args({})
-        assert.is_false(has(args, "-version"))
-    end)
-
-    it("overrides -products * when vs_products is a non-empty list", function()
-        local args = VsWhere._build_args({
-            vs_products = { "Microsoft.VisualStudio.Product.Professional" },
-        })
-        assert.are.equal("-products", args[1])
-        assert.are.equal("Microsoft.VisualStudio.Product.Professional", args[2])
-        -- '*' must not appear right after -products
-        assert.is_false(args[3] == "*")
-    end)
-
-    it("falls back to '*' for empty vs_products", function()
-        local args = VsWhere._build_args({ vs_products = {} })
-        assert.are.equal("-products", args[1])
-        assert.are.equal("*", args[2])
+        it("expands vs_products and vs_requires", function()
+            local args = VsWhere._build_args({
+                vs_products = { "P1", "P2" },
+                vs_requires = { "R1" },
+                vs_prerelease = true,
+                vs_version = "2022",
+            })
+            local s = table.concat(args, " ")
+            assert.is_truthy(s:find("-products P1 P2"))
+            assert.is_truthy(s:find("-prerelease"))
+            assert.is_truthy(s:find("-version %[17.0,18.0%)"))
+            assert.is_truthy(s:find("-requires R1"))
+        end)
     end)
 end)

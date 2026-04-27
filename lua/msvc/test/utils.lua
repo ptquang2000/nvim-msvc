@@ -13,8 +13,8 @@ end
 --- @return table
 function M.fake_config(overrides)
     local Config = require("msvc.config")
-    local Util = require("msvc.util")
-    return Util.tbl_deep_merge(Config.get_default_config(), overrides or {})
+    local cfg = Config.merge_config(overrides or {})
+    return cfg
 end
 
 --- Capture vim.notify calls. Returns { restore=fn, calls={...} }.

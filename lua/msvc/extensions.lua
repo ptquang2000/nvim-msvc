@@ -1,19 +1,18 @@
----@class MsvcExtensions
----@field listeners table[]
+-- msvc.extensions — frozen event names + listener bus (harpoon-style).
 
 local event_names = setmetatable({
     BUILD_START = "BUILD_START",
     BUILD_OUTPUT = "BUILD_OUTPUT",
     BUILD_DONE = "BUILD_DONE",
     BUILD_CANCEL = "BUILD_CANCEL",
-    ENV_RESOLVED = "ENV_RESOLVED",
-    STATE_CHANGED = "STATE_CHANGED",
+    SETUP_CALLED = "SETUP_CALLED",
 }, {
     __newindex = function()
         error("event_names is frozen")
     end,
 })
 
+---@class MsvcExtensions
 local MsvcExtensions = {}
 MsvcExtensions.__index = MsvcExtensions
 
@@ -36,10 +35,7 @@ function MsvcExtensions:emit(event, ...)
             local ok, err = pcall(cb, ...)
             if not ok then
                 vim.notify(
-                    "msvc extension listener error for "
-                        .. tostring(event)
-                        .. ": "
-                        .. tostring(err),
+                    ("msvc extension error for %s: %s"):format(event, err),
                     vim.log.levels.ERROR
                 )
             end
@@ -47,10 +43,8 @@ function MsvcExtensions:emit(event, ...)
     end
 end
 
-local extensions = MsvcExtensions:new()
-
 return {
     MsvcExtensions = MsvcExtensions,
     event_names = event_names,
-    extensions = extensions,
+    extensions = MsvcExtensions:new(),
 }

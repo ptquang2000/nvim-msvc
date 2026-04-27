@@ -1,56 +1,38 @@
-local TestUtils = require("msvc.test.utils")
+local helpers = require("msvc.test.utils")
 
 describe("msvc.quickfix", function()
+    local QF
+
     before_each(function()
-        TestUtils.reset()
-        vim.fn.setqflist({}, "r", { title = "MSBuild", items = {} })
+        helpers.reset()
+        QF = require("msvc.quickfix")
     end)
 
-    it("parse_lines parses MSBuild error/warning shapes", function()
-        local Qf = require("msvc.quickfix")
-        local lines = {
-            [[C:\src\foo.cpp(42,7): error C2059: syntax error: ';']],
-            [[C:\src\bar.cpp(13): warning C4100: 'arg' unreferenced]],
-            [[some unrelated noise]],
-        }
-        local entries = Qf.parse_lines(lines)
-        assert.equals(2, #entries)
-
-        assert.equals(42, entries[1].lnum)
-        assert.equals(7, entries[1].col)
-        assert.equals("e", entries[1].type)
-        assert.is_true(entries[1].text:find("C2059", 1, true) ~= nil)
-        assert.is_true(entries[1].filename:find("foo.cpp", 1, true) ~= nil)
-
-        assert.equals(13, entries[2].lnum)
-        assert.equals("w", entries[2].type)
-        assert.is_true(entries[2].text:find("C4100", 1, true) ~= nil)
-    end)
-
-    it("from_build_output publishes and returns count", function()
-        local Qf = require("msvc.quickfix")
-        local count = Qf.from_build_output({
-            [[C:\src\foo.cpp(1,1): error C2143: missing token]],
-            [[C:\src\foo.cpp(2,2): error C2144: another]],
+    it("parses MSVC error / warning lines", function()
+        local entries = QF.parse_lines({
+            [[C:\src\foo.cpp(12,3): error C2065: 'x': undeclared identifier]],
+            [[C:\src\bar.cpp(7,1): warning C4101: 'y': unreferenced local variable]],
+            "this line should be ignored",
         })
-        assert.equals(2, count)
-        local list = vim.fn.getqflist()
-        assert.equals(2, #list)
+        assert.are.equal(2, #entries)
+        assert.are.equal(12, entries[1].lnum)
+        assert.are.equal(3, entries[1].col)
+        assert.are.equal("e", entries[1].type)
+        assert.are.equal("w", entries[2].type)
     end)
 
-    it("clear empties the quickfix list", function()
-        local Qf = require("msvc.quickfix")
-        Qf.from_build_output({
-            [[C:\src\foo.cpp(1,1): error C2143: missing token]],
-        })
-        assert.is_true(#vim.fn.getqflist() >= 1)
-        Qf.clear()
-        assert.equals(0, #vim.fn.getqflist())
-    end)
-
-    it("parse_lines returns empty for empty input", function()
-        local Qf = require("msvc.quickfix")
-        assert.same({}, Qf.parse_lines({}))
-        assert.same({}, Qf.parse_lines(nil))
+    it("publishes to qf list", function()
+        QF.publish({
+            {
+                filename = "C:\\foo.cpp",
+                lnum = 1,
+                col = 1,
+                type = "E",
+                text = "boom",
+            },
+        }, { title = "test" })
+        local list = vim.fn.getqflist({ items = 0, title = 0 })
+        assert.are.equal("test", list.title)
+        assert.are.equal(1, #list.items)
     end)
 end)
