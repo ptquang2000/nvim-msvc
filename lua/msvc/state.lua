@@ -7,6 +7,9 @@ local ALLOWED_FIELDS = {
     project = true,
     profile = true,
     install_path = true,
+    install_display_name = true,
+    install_version = true,
+    install_product_line_version = true,
     arch = true,
 }
 
@@ -16,6 +19,9 @@ local function default_fields()
         project = nil,
         profile = nil,
         install_path = nil,
+        install_display_name = nil,
+        install_version = nil,
+        install_product_line_version = nil,
         arch = "x64",
     }
 end
@@ -25,6 +31,9 @@ end
 ---@field project string|nil
 ---@field profile string|nil
 ---@field install_path string|nil
+---@field install_display_name string|nil
+---@field install_version string|nil
+---@field install_product_line_version string|nil
 ---@field arch string
 local MsvcState = {}
 MsvcState.__index = MsvcState
@@ -54,6 +63,9 @@ function MsvcState:get_snapshot()
         project = self.project,
         profile = self.profile,
         install_path = self.install_path,
+        install_display_name = self.install_display_name,
+        install_version = self.install_version,
+        install_product_line_version = self.install_product_line_version,
         arch = self.arch,
     }
 end

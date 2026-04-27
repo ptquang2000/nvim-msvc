@@ -10,6 +10,7 @@ local State = require("msvc.state").MsvcState
 local Build = require("msvc.build").MsvcBuild
 local QuickFix = require("msvc.quickfix")
 local CompileCommands = require("msvc.compile_commands")
+local ProjectScan = require("msvc.project_scan")
 
 ---@class Msvc
 ---@field config MsvcConfig
@@ -40,9 +41,25 @@ function Msvc:new()
         -- so picking a profile always starts from the configured baseline.
         profile_overrides = {},
         -- Cached list of Visual Studio installations discovered by the
-        -- async vswhere lookup kicked off in `setup`. Used to drive
-        -- `:Msvc update install_path` completion.
+        -- async vswhere lookup kicked off in `setup`. Used to drive the
+        -- `vs_*` field completion candidates.
         vs_installations = {},
+        -- Async-warmed completion candidates derived from the vswhere
+        -- output. Each list is empty until `_warm_vs_installations`
+        -- completes; `commands.lua` falls back to a static list while
+        -- the warm is in flight.
+        vs_completion_candidates = {
+            vs_version = {},
+            vs_prerelease = { "false", "true" },
+            vs_products = {},
+            vs_requires = {},
+        },
+        -- Project-level completion candidates derived from .sln /
+        -- .vcxproj scanning. Populated by `_warm_project_targets`.
+        project_targets = {
+            configurations = {},
+            platforms = {},
+        },
     }, self)
 end
 
@@ -106,7 +123,8 @@ function Msvc:setup(partial_config)
         end,
     })
     self:_auto_select_defaults()
-    self:_warm_install_path()
+    self:_warm_vs_installations()
+    self:_warm_project_targets()
     return self
 end
 
@@ -218,24 +236,217 @@ function Msvc:_auto_select_defaults()
     Log:debug("loaded default_profile %q", name)
 end
 
---- Kick off an asynchronous vswhere lookup so that `state.install_path`
---- is populated by the time the user triggers a build / resolve. No-op
---- when an install_path is already known (state or configured profile).
---- Failures are silent — the synchronous fallbacks in `Msvc:build`
---- still run if needed.
-function Msvc:_warm_install_path()
+--- Build a sorted, deduplicated copy of `list` (string entries only).
+---@param list string[]
+---@return string[]
+local function sorted_unique(list)
+    local seen, out = {}, {}
+    for _, v in ipairs(list) do
+        if type(v) == "string" and v ~= "" and not seen[v] then
+            seen[v] = true
+            out[#out + 1] = v
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--- Extract the leading major (integer) from a vswhere installationVersion.
+---@param iv string|nil
+---@return integer|nil
+local function major_of(iv)
+    if type(iv) ~= "string" then
+        return nil
+    end
+    local m = iv:match("^(%d+)")
+    return m and tonumber(m) or nil
+end
+
+--- Sort `vs_version` candidates: `"latest"` first, then by parsed major
+--- desc, then by full numeric tuple desc, ties alphabetical. Mutates and
+--- returns a deduplicated copy of `list`.
+---@param list string[]
+---@return string[]
+local function sort_vs_versions(list)
+    local seen, deduped = {}, {}
+    for _, v in ipairs(list) do
+        if type(v) == "string" and v ~= "" and not seen[v] then
+            seen[v] = true
+            deduped[#deduped + 1] = v
+        end
+    end
+    local function tuple(s)
+        local t = {}
+        for n in s:gmatch("(%d+)") do
+            t[#t + 1] = tonumber(n) or 0
+        end
+        return t
+    end
+    table.sort(deduped, function(a, b)
+        if a == "latest" then
+            return true
+        end
+        if b == "latest" then
+            return false
+        end
+        local ma = tonumber(a:match("^%[?(%d+)")) or 0
+        local mb = tonumber(b:match("^%[?(%d+)")) or 0
+        if ma ~= mb then
+            return ma > mb
+        end
+        local ta, tb = tuple(a), tuple(b)
+        for i = 1, math.max(#ta, #tb) do
+            local ai, bi = ta[i] or 0, tb[i] or 0
+            if ai ~= bi then
+                return ai > bi
+            end
+        end
+        return a < b
+    end)
+    return deduped
+end
+
+--- Derive the four `vs_*` completion lists from a vswhere installs array
+--- and store them on `self.vs_completion_candidates`. Safe to call with
+--- an empty/nil install list — the result is a deterministic static
+--- fallback (`"latest"`, the four well-known product IDs, etc).
+---
+--- `vs_version` shape (canonical vswhere inputs only):
+---   * `"latest"` — sentinel; translates to "no -version flag".
+---   * Each install's full `installationVersion` (e.g. `"17.14.37216.2"`).
+---   * For each unique major M parsed from `installationVersion`: the
+---     range string `"[M.0,(M+1).0)"` (e.g. `"[17.0,18.0)"`).
+--- Marketing-year (`"2017"` / `"2022"`) and bare-major (`"15"` / `"17"`)
+--- forms are deliberately **not** suggested — they are still accepted as
+--- freehand input and translated by `vswhere.translate_version`.
+---@param installs table[]|nil
+function Msvc:_populate_vs_completion_candidates(installs)
+    installs = installs or {}
+
+    local versions = { "latest" }
+    local seen_versions = { latest = true }
+    local majors_seen = {}
+
+    local products = {
+        "Microsoft.VisualStudio.Product.Community",
+        "Microsoft.VisualStudio.Product.Professional",
+        "Microsoft.VisualStudio.Product.Enterprise",
+        "Microsoft.VisualStudio.Product.BuildTools",
+    }
+    local requires = {}
+
+    for _, inst in ipairs(installs) do
+        local iv = inst.installationVersion
+        if type(iv) == "string" and iv ~= "" and not seen_versions[iv] then
+            seen_versions[iv] = true
+            versions[#versions + 1] = iv
+        end
+        local maj = major_of(iv)
+        if maj and not majors_seen[maj] then
+            majors_seen[maj] = true
+            local rng = string.format("[%d.0,%d.0)", maj, maj + 1)
+            if not seen_versions[rng] then
+                seen_versions[rng] = true
+                versions[#versions + 1] = rng
+            end
+        end
+        if type(inst.productId) == "string" and inst.productId ~= "" then
+            products[#products + 1] = inst.productId
+        end
+        if type(inst.packages) == "table" then
+            for _, pkg in ipairs(inst.packages) do
+                if
+                    type(pkg) == "table"
+                    and type(pkg.id) == "string"
+                    and pkg.id ~= ""
+                    and (pkg.type == "Component" or pkg.type == "Workload")
+                then
+                    requires[#requires + 1] = pkg.id
+                end
+            end
+        end
+        -- NOTE: catalog.productLineVersion intentionally NOT added —
+        -- vswhere does not accept marketing-year tokens on -version.
+    end
+
+    self.vs_completion_candidates = {
+        vs_version = sort_vs_versions(versions),
+        vs_prerelease = { "false", "true" },
+        vs_products = sorted_unique(products),
+        vs_requires = sorted_unique(requires),
+    }
+end
+
+--- Atomically write `state.install_path` and the friendly metadata
+--- (`install_display_name`, `install_version`,
+--- `install_product_line_version`) derived from a vswhere install record.
+--- Missing/empty record fields clear the corresponding state field.
+---@param inst table  vswhere install entry (must have installationPath)
+function Msvc:_set_install_from_record(inst)
+    local path = Util.normalize_path(inst.installationPath)
+        or inst.installationPath
+    local catalog = type(inst.catalog) == "table" and inst.catalog or {}
+    local function s_or_nil(v)
+        if type(v) == "string" and v ~= "" then
+            return v
+        end
+        return nil
+    end
+    self.state:set("install_path", path)
+    self.state:set("install_display_name", s_or_nil(inst.displayName))
+    self.state:set("install_version", s_or_nil(inst.installationVersion))
+    self.state:set(
+        "install_product_line_version",
+        s_or_nil(catalog.productLineVersion)
+    )
+end
+
+--- Atomically clear `state.install_path` and all install_* friendlies.
+function Msvc:_clear_install()
+    self.state:set("install_path", nil)
+    self.state:set("install_display_name", nil)
+    self.state:set("install_version", nil)
+    self.state:set("install_product_line_version", nil)
+end
+
+--- Kick off two asynchronous vswhere lookups in parallel:
+---
+--- (1) UNFILTERED warm — drives `vs_completion_candidates` so the menu
+---     lists every install on the machine regardless of the active
+---     profile filters. Always passes `vs_prerelease=true` and
+---     `include_packages=true`; never forwards `vs_version` /
+---     `vs_products` / `vs_requires` from the profile.
+---
+--- (2) FILTERED resolve — populates `state.install_path` (+ friendlies)
+---     using the active profile filters. Skipped when `install_path` is
+---     already cached (the user has a pinned selection we should not
+---     silently overwrite).
+---
+--- Failures are independent and silent: a failing unfiltered warm leaves
+--- completion candidates empty (the static fallback in `commands.lua`
+--- still kicks in); a failing filtered resolve leaves `install_path` nil.
+function Msvc:_warm_vs_installations()
+    local profile_name = self.state:profile_name()
+    local profile_view = self:get_profile(profile_name)
+    local vswhere_path = profile_view.vswhere_path
+
+    -- (1) Unfiltered warm — completion candidates only.
+    VsWhere.list_installations_async({
+        vswhere_path = vswhere_path,
+        vs_prerelease = true,
+        include_packages = true,
+    }, function(installs, err)
+        if err then
+            Log:debug("warm vs_installations (unfiltered): %s", err)
+        end
+        self.vs_installations = installs or {}
+        self:_populate_vs_completion_candidates(installs or {})
+    end)
+
+    -- (2) Filtered resolve — only when no install_path is cached.
     if self.state.install_path and self.state.install_path ~= "" then
         return
     end
-    local profile_name = self.state:profile_name()
-    local profile_view = Config.get_profile(self.config, profile_name)
-    if
-        type(profile_view.install_path) == "string"
-        and profile_view.install_path ~= ""
-    then
-        return
-    end
-    local vswhere_path = profile_view.vswhere_path
     VsWhere.list_installations_async({
         vswhere_path = vswhere_path,
         vs_version = profile_view.vs_version,
@@ -244,21 +455,82 @@ function Msvc:_warm_install_path()
         vs_requires = profile_view.vs_requires,
     }, function(installs, err)
         if err then
-            Log:debug("warm install_path: %s", err)
+            Log:debug("warm vs_installations (active): %s", err)
         end
-        self.vs_installations = installs or {}
         local inst = VsWhere.pick_latest(installs)
         if not inst or not inst.installationPath then
             return
         end
         -- Don't clobber a value the user set between the spawn and
-        -- the callback (e.g. via `:Msvc update install_path`).
+        -- the callback (e.g. via an explicit state mutation). Callers
+        -- that want a re-resolve (e.g. `:Msvc update vs_version <X>`)
+        -- must clear `state.install_path` BEFORE calling this so the
+        -- callback fills the freshly-empty cache.
         if self.state.install_path and self.state.install_path ~= "" then
             return
         end
-        local install = Util.normalize_path(inst.installationPath)
-        self.state:set("install_path", install)
-        Log:debug("warm install_path resolved: %s", install)
+        self:_set_install_from_record(inst)
+        Log:debug(
+            "warm vs_installations resolved install_path: %s",
+            self.state.install_path
+        )
+    end)
+end
+
+--- Scan the active solution + its referenced projects for the set of
+--- `Configuration|Platform` tuples and store them on
+--- `self.project_targets`. Falls back to a minimal default list when no
+--- .sln/.vcxproj files are found, so completion always returns
+--- something useful even outside a project tree.
+function Msvc:_warm_project_targets()
+    vim.schedule(function()
+        local files = {}
+        local solution = self.state.solution
+        if type(solution) == "string" and Util.is_file(solution) then
+            files[#files + 1] = solution
+            for _, p in ipairs(self.solution_projects or {}) do
+                if type(p) == "table" and type(p.path) == "string" then
+                    files[#files + 1] = p.path
+                end
+                if #files >= 1 + 8 then
+                    break
+                end
+            end
+        else
+            files = ProjectScan.find_targets_in_cwd({ depth = 2, cap = 50 })
+        end
+        if #files == 0 then
+            self.project_targets = ProjectScan.fallback_defaults()
+            return
+        end
+        local pairs_acc = {}
+        for _, path in ipairs(files) do
+            local content = ProjectScan.read_file(path)
+            if content then
+                local lower = path:lower()
+                local parsed
+                if lower:match("%.sln$") or lower:match("%.slnx$") then
+                    parsed = ProjectScan.parse_sln(content)
+                elseif lower:match("%.vcxproj$") then
+                    parsed = ProjectScan.parse_vcxproj(content)
+                end
+                if parsed then
+                    for _, t in ipairs(parsed) do
+                        pairs_acc[#pairs_acc + 1] = t
+                    end
+                end
+            end
+        end
+        local result = ProjectScan.dedup_sort(pairs_acc)
+        if #result.configurations == 0 and #result.platforms == 0 then
+            result = ProjectScan.fallback_defaults()
+        end
+        self.project_targets = result
+        Log:debug(
+            "warm project_targets: %d cfg, %d plat",
+            #result.configurations,
+            #result.platforms
+        )
     end)
 end
 
@@ -275,9 +547,7 @@ function Msvc:resolve(opts)
     local profile_name = opts.profile or self.state:profile_name()
     local entry = self:get_profile(profile_name)
     opts.arch = opts.arch or self.state.arch or entry.arch
-    opts.install_path = opts.install_path
-        or self.state.install_path
-        or entry.install_path
+    opts.install_path = opts.install_path or self.state.install_path
     if opts.vcvars_ver == nil then
         opts.vcvars_ver = entry.vcvars_ver
     end
@@ -301,8 +571,13 @@ function Msvc:resolve(opts)
         Log:error("env resolve failed: %s", tostring(err))
         return nil
     end
-    if opts.install_path then
+    if opts.install_path and opts.install_path ~= self.state.install_path then
+        -- External / overridden path — friendlies become stale; clear
+        -- them so `:Msvc status` falls back to the path-only line.
         self.state:set("install_path", opts.install_path)
+        self.state:set("install_display_name", nil)
+        self.state:set("install_version", nil)
+        self.state:set("install_product_line_version", nil)
     end
     return env
 end
@@ -316,8 +591,7 @@ function Msvc:resolve_install_path()
     if self.state.install_path and self.state.install_path ~= "" then
         return self.state.install_path
     end
-    local profile_view =
-        Config.get_profile(self.config, self.state:profile_name())
+    local profile_view = self:get_profile(self.state:profile_name())
     local inst = VsWhere.find_latest({
         vswhere_path = profile_view.vswhere_path,
         vs_version = profile_view.vs_version,
@@ -329,9 +603,44 @@ function Msvc:resolve_install_path()
         Log:error("no Visual Studio installation found")
         return nil
     end
-    local install = Util.normalize_path(inst.installationPath)
-    self.state:set("install_path", install)
-    return install
+    self:_set_install_from_record(inst)
+    return self.state.install_path
+end
+
+--- Synchronous, override-aware re-resolve of `state.install_path`.
+--- Used by `:Msvc update <vs_*>` so the immediately following
+--- `:Msvc status` reflects the new selection without waiting on the
+--- async warm. Skips the `-include packages` flag (only needed for
+--- `vs_requires` completion, which the async warm refreshes).
+---
+--- Side effects:
+---   * Clears `state.install_path` first.
+---   * On match: populates `state.install_path` with the resolved root.
+---   * On no match: leaves `state.install_path` nil and emits a warning
+---     naming the offending vs_version value.
+---
+---@return string|nil install_path
+function Msvc:_resolve_install_path_sync()
+    self:_clear_install()
+    local name = self.state:profile_name()
+    local profile_view = self:get_profile(name)
+    local inst = VsWhere.find_latest({
+        vswhere_path = profile_view.vswhere_path,
+        vs_version = profile_view.vs_version,
+        vs_prerelease = profile_view.vs_prerelease,
+        vs_products = profile_view.vs_products,
+        vs_requires = profile_view.vs_requires,
+    })
+    if not inst or not inst.installationPath then
+        Log:warn(
+            "no Visual Studio installation matches vs_version=%s",
+            tostring(profile_view.vs_version or "<unset>")
+        )
+        return nil
+    end
+    self:_set_install_from_record(inst)
+    Log:debug("re-resolved install_path: %s", self.state.install_path)
+    return self.state.install_path
 end
 
 --- Run discover.find_solution from cwd and store the result on state.
@@ -526,7 +835,35 @@ function Msvc:status()
     local s = self.state:get_snapshot()
     Log:info("solution = %s", tostring(s.solution or "<none>"))
     Log:info("project  = %s", tostring(s.project or "<none>"))
-    Log:info("install  = %s", tostring(s.install_path or "<none>"))
+
+    if not s.install_path or s.install_path == "" then
+        Log:info("install  = <none>")
+    elseif s.install_display_name and s.install_display_name ~= "" then
+        local v = s.install_version
+        if v and v ~= "" then
+            Log:info("install  = %s (%s)", s.install_display_name, v)
+        else
+            Log:info("install  = %s", s.install_display_name)
+        end
+        Log:info("path     = %s", s.install_path)
+    elseif
+        s.install_product_line_version
+        and s.install_product_line_version ~= ""
+    then
+        local v = (s.install_version and s.install_version ~= "")
+                and s.install_version
+            or "unknown"
+        Log:info(
+            "install  = Visual Studio %s (%s)",
+            s.install_product_line_version,
+            v
+        )
+        Log:info("path     = %s", s.install_path)
+    else
+        -- Legacy / externally-written install_path (no friendlies).
+        Log:info("install  = %s", s.install_path)
+    end
+
     local cc = self.config
         and self.config.settings
         and self.config.settings.compile_commands

@@ -123,15 +123,10 @@ end
 -- Section: VS / MSBuild discovery ----------------------------------------
 
 -- Resolve the Visual Studio install path the same way the build pipeline
--- does: state cache → explicit profile.install_path → vswhere latest.
+-- does: state cache → vswhere latest. `install_path` is no longer a
+-- user-facing config knob — `vs_version` + vswhere drives discovery.
 local function resolve_install(msvc, profile, vswhere)
     local install = msvc.state and msvc.state.install_path
-    if
-        (not install or install == "")
-        and type(profile.install_path) == "string"
-    then
-        install = profile.install_path
-    end
     if (not install or install == "") and vswhere then
         local inst = VsWhere.find_latest({
             vswhere_path = vswhere,
@@ -183,7 +178,8 @@ local function check_toolchain(msvc)
     else
         warn("no Visual Studio installation resolved yet", {
             "Install Visual Studio 2019/2022 with the *Desktop development with C++* workload.",
-            "If installed in a non-default location, set `install_path` on your default profile.",
+            "If multiple installs are present, set `vs_version` on your profile (e.g. `vs_version = '17'`) to disambiguate.",
+            "If `vswhere.exe` lives in a non-standard location, set `vswhere_path` on your profile.",
         })
     end
 end
@@ -236,7 +232,7 @@ local function check_extractor_prereqs(install)
         warn(
             "extractor MSBuild bootstrap not verified — no Visual Studio install resolved",
             {
-                "Set `profiles.<name>.install_path` or ensure `vswhere.exe` returns a result.",
+                "Set `vs_version` on your profile, or ensure `vswhere.exe` returns a result.",
             }
         )
         return

@@ -61,7 +61,6 @@
 ---@field vcvars_ver? string
 ---@field winsdk? string
 ---@field vcvars_spectre_libs? string
----@field install_path? string
 
 ---@class MsvcConfig
 ---@field settings MsvcSettings
@@ -136,8 +135,12 @@ local KNOWN_COMPILE_COMMANDS = {
 -- Fields that may appear on a profile entry. A profile carries the full
 -- merged surface area: MSBuild parameters (configuration, platform,
 -- target, msbuild_args, jobs, ...) plus the developer-env parameters
--- (arch, host_arch, vcvars_ver, winsdk, vs_*, vswhere_path, install_path)
--- that used to live on a separate "resolve" table. There is no nesting.
+-- (arch, host_arch, vcvars_ver, winsdk, vs_*, vswhere_path) that used
+-- to live on a separate "resolve" table. There is no nesting.
+--
+-- `install_path` was removed as a user-facing knob in favour of
+-- `vs_version` + vswhere — the runtime cache for it now lives only on
+-- `state` (see `state.install_path`).
 local KNOWN_PROFILE = {
     configuration = "string",
     platform = "string",
@@ -158,7 +161,14 @@ local KNOWN_PROFILE = {
     vcvars_spectre_libs = "string",
     arch = "string",
     host_arch = "string",
-    install_path = "string",
+}
+
+-- Profile keys that have been retired but still appear in older user
+-- configs. We keep loading them (with a warning) so existing setups
+-- don't error out on upgrade; the value is ignored.
+local DEPRECATED_PROFILE = {
+    install_path = "removed — VS install is now resolved entirely via `vs_version` + vswhere; "
+        .. "set `vs_version` and/or `vswhere_path` instead, or rely on the default `latest`.",
 }
 
 -- Keys accepted at the top level of `setup({ ... })`. Anything outside
@@ -232,18 +242,15 @@ local function root_name(config)
     return nil
 end
 
---- Sorted list of named profiles excluding the configured root profile
---- (so it doesn't appear as a switch target — switching to it is a
---- no-op since it's already the base layer).
+--- Sorted list of all named profiles defined under `config.profiles`,
+--- including the one referenced by `settings.default_profile` when it
+--- exists. Used to power `:Msvc profile <name>` completion.
 ---@param config MsvcConfig
 ---@return string[]
 function M.list_profile_names(config)
     local names = {}
-    local root = root_name(config)
     for k in pairs((config or {}).profiles or {}) do
-        if k ~= root then
-            names[#names + 1] = k
-        end
+        names[#names + 1] = k
     end
     table.sort(names)
     return names
@@ -462,37 +469,44 @@ end
 local function validate_profile(label, profile)
     check_type(label, profile, "table")
     for k, v in pairs(profile) do
-        local expected = KNOWN_PROFILE[k]
-        if expected == nil then
-            Log:warn("config: unknown %s key %q", label, tostring(k))
-        elseif v ~= nil then
-            local got = type(v)
-            if
-                expected == "string"
-                and (k == "vswhere_path" or k == "install_path")
-            then
-                if got ~= "string" and got ~= "nil" then
+        local deprecated_msg = DEPRECATED_PROFILE[k]
+        if deprecated_msg ~= nil then
+            Log:warn(
+                "config: %s.%s is deprecated: %s value ignored",
+                label,
+                tostring(k),
+                deprecated_msg
+            )
+        else
+            local expected = KNOWN_PROFILE[k]
+            if expected == nil then
+                Log:warn("config: unknown %s key %q", label, tostring(k))
+            elseif v ~= nil then
+                local got = type(v)
+                if expected == "string" and (k == "vswhere_path") then
+                    if got ~= "string" and got ~= "nil" then
+                        error(
+                            ("msvc.config: %s.%s must be a string, got %s"):format(
+                                label,
+                                k,
+                                got
+                            ),
+                            2
+                        )
+                    end
+                elseif got ~= expected then
                     error(
-                        ("msvc.config: %s.%s must be a string, got %s"):format(
+                        ("msvc.config: %s.%s must be a %s, got %s"):format(
                             label,
                             k,
+                            expected,
                             got
                         ),
                         2
                     )
                 end
-            elseif got ~= expected then
-                error(
-                    ("msvc.config: %s.%s must be a %s, got %s"):format(
-                        label,
-                        k,
-                        expected,
-                        got
-                    ),
-                    2
-                )
             end
-        end
+        end -- /else (not deprecated)
     end
     if type(profile.jobs) == "number" and profile.jobs < 0 then
         error(("msvc.config: %s.jobs must be >= 0"):format(label), 2)

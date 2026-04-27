@@ -17,6 +17,72 @@ local DEFAULT_VSWHERE =
 local VC_TOOLS_REQ = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
 local _ = VC_TOOLS_REQ
 
+-- Map a major version number (as integer) → vswhere range string covering
+-- exactly that major (`[N.0,(N+1).0)`).
+local function major_range(major)
+    return string.format("[%d.0,%d.0)", major, major + 1)
+end
+
+-- Marketing-year shorthand → bare-major. vswhere does NOT understand
+-- "2017"/"2022", so we translate to a major and then to a range.
+local YEAR_TO_MAJOR = {
+    ["2015"] = 14,
+    ["2017"] = 15,
+    ["2019"] = 16,
+    ["2022"] = 17,
+}
+
+--- Translate a user-facing `vs_version` token into a value vswhere will
+--- accept on its `-version` flag.
+---
+--- Behaviour:
+---   * `nil` / `""` / `"latest"` / `"any"` → `nil` (caller should omit the
+---     `-version` flag entirely).
+---   * Marketing year (`"2015"` / `"2017"` / `"2019"` / `"2022"`) →
+---     range covering that year only, e.g. `"2017"` → `"[15.0,16.0)"`.
+---   * Bare major (`"14"` / `"15"` / `"16"` / `"17"` / `"18"`) → range
+---     covering exactly that major, e.g. `"17"` → `"[17.0,18.0)"`.
+---     NOTE: this is a deliberate behaviour change from vswhere's default
+---     `>=N.0` semantics for bare majors — `"17"` now means "VS 2022 only",
+---     not ">=17". Use full semver or explicit range syntax to opt back in.
+---   * Multi-component (3+) numeric versions like `"15.9.37202.19"` are
+---     wrapped as a closed-closed exact-match range `"[X,X]"`. vswhere
+---     treats `-version X.Y.Z` as `>= X.Y.Z`, which would silently pick a
+---     newer install (e.g. VS 2022 17.x) instead of the requested one;
+---     the bracketed form pins the lookup to the exact installation.
+---   * Two-component inputs like `"15.9"` and unknown strings (including
+---     already-range syntax like `"[17.0,18.0)"`) pass through verbatim.
+---     Two-component is intentionally NOT wrapped — real installations
+---     have 4 components, so `[15.9,15.9]` would match nothing.
+---@param v string|nil
+---@return string|nil
+local function translate_version(v)
+    if type(v) ~= "string" or v == "" or v == "latest" or v == "any" then
+        return nil
+    end
+    local year_major = YEAR_TO_MAJOR[v]
+    if year_major then
+        return major_range(year_major)
+    end
+    -- Bare major: a string of digits (one or more) covering known majors.
+    if v:match("^%d+$") then
+        local n = tonumber(v)
+        if n and n >= 14 and n <= 18 then
+            return major_range(n)
+        end
+    end
+    -- Multi-component numeric version (3+ components) → exact match.
+    -- vswhere treats `-version X.Y.Z` as `>= X.Y.Z`, which silently picks
+    -- a newer install instead of the requested one. Wrap as a closed-
+    -- closed range so vswhere returns only the exact-version install.
+    if v:match("^%d+%.%d+%.%d+[%d%.]*$") then
+        return "[" .. v .. "," .. v .. "]"
+    end
+    return v
+end
+
+M.translate_version = translate_version
+
 --- Build the `vswhere` argv (excluding the executable and the trailing
 --- `-format json -utf8 -nologo` flags) from a profile-shaped opts table.
 ---
@@ -25,8 +91,9 @@ local _ = VC_TOOLS_REQ
 ---     Defaults to `{"*"}` when nil/empty.
 ---   * `vs_prerelease` boolean  — emits `-prerelease` when truthy.
 ---   * `vs_version`   string    — emitted as `-version <value>` when set
----     and not `"latest"` / `"any"`. Passed verbatim so callers can use
----     vswhere's range syntax, e.g. `"[17.0,18.0)"`.
+---     and not `"latest"` / `"any"`. Marketing years and bare majors are
+---     translated to vswhere range syntax via `translate_version`; full
+---     semver and explicit range strings pass through verbatim.
 ---   * `vs_requires`  string[]  — emitted as one `-requires <id>` pair
 ---     per element. When nil/empty, no `-requires` flag is emitted.
 ---
@@ -54,13 +121,8 @@ local function build_args(opts)
         args[#args + 1] = "-prerelease"
     end
 
-    local v = opts.vs_version
-    if
-        type(v) == "string"
-        and v ~= ""
-        and v ~= "latest"
-        and v ~= "any"
-    then
+    local v = translate_version(opts.vs_version)
+    if v ~= nil then
         args[#args + 1] = "-version"
         args[#args + 1] = v
     end
@@ -72,6 +134,11 @@ local function build_args(opts)
                 args[#args + 1] = req
             end
         end
+    end
+
+    if opts.include_packages then
+        args[#args + 1] = "-include"
+        args[#args + 1] = "packages"
     end
 
     return args

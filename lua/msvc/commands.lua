@@ -40,23 +40,32 @@ local PROFILE_PROPS = {
 }
 
 -- Properties that live on the global runtime state rather than on any
--- profile entry. Updates to these don't require a profile to be selected.
-local STATE_PROPS = {
-    install_path = "string",
-}
+-- profile entry. `:Msvc update` has no state-level properties at the
+-- moment — `install_path` was retired (resolved automatically from
+-- `vs_version` + vswhere), and no other state field is user-writable.
+local STATE_PROPS = {}
 
--- Known value enumerations; used to drive 2nd-arg completion. Properties
--- not listed here fall through to no completion (free-form input).
-local PROP_VALUES = {
-    configuration = { "Debug", "Release", "RelWithDebInfo", "MinSizeRel" },
-    platform = { "x64", "x86", "Win32", "ARM64", "arm64" },
+-- Static fallback value lists. Used both for properties that have no
+-- async source (target/arch/host_arch/verbosity/no_logo/...) and as a
+-- pre-warm fallback for properties that *do* have a dynamic source
+-- (vs_version, configuration, platform), so completion never returns
+-- empty during the brief window between setup() and the warm callback.
+local static_fallback = {
+    configuration = { "Debug", "Release" },
+    platform = { "Win32", "x64" },
     target = { "Build", "Rebuild", "Clean" },
     arch = { "x64", "x86", "arm64" },
     host_arch = { "x64", "x86", "arm64" },
     verbosity = { "quiet", "minimal", "normal", "detailed", "diagnostic" },
     no_logo = { "true", "false" },
-    vs_prerelease = { "true", "false" },
-    vs_version = { "latest", "16", "17" },
+    vs_prerelease = { "false", "true" },
+    vs_version = { "latest", "[17.0,18.0)", "[16.0,17.0)", "[15.0,16.0)" },
+    vs_products = {
+        "Microsoft.VisualStudio.Product.BuildTools",
+        "Microsoft.VisualStudio.Product.Community",
+        "Microsoft.VisualStudio.Product.Enterprise",
+        "Microsoft.VisualStudio.Product.Professional",
+    },
     vcvars_spectre_libs = { "spectre", "spectre_load", "spectre_load_cf" },
 }
 
@@ -202,6 +211,45 @@ local PROP_VALUE_PROVIDERS = {
     winsdk = list_winsdk,
 }
 
+-- Async-warmed candidate sources. Each provider returns the current
+-- live list (which may be empty before the warm completes — the
+-- selection chain in `update.complete` falls back to `static_fallback`
+-- in that case). Providers are pure reads off the singleton so they
+-- compose with the warm path without any additional plumbing.
+local dynamic_providers = {
+    vs_version = function()
+        local c = msvc.vs_completion_candidates
+        return c and c.vs_version
+    end,
+    vs_prerelease = function()
+        local c = msvc.vs_completion_candidates
+        return c and c.vs_prerelease
+    end,
+    vs_products = function()
+        local c = msvc.vs_completion_candidates
+        return c and c.vs_products
+    end,
+    vs_requires = function()
+        local c = msvc.vs_completion_candidates
+        return c and c.vs_requires
+    end,
+    configuration = function()
+        local p = msvc.project_targets
+        return p and p.configurations
+    end,
+    platform = function()
+        local p = msvc.project_targets
+        return p and p.platforms
+    end,
+}
+
+local function nonempty_list(t)
+    if type(t) == "table" and #t > 0 then
+        return t
+    end
+    return nil
+end
+
 local function coerce_value(prop, expected_type, raw)
     if expected_type == "number" then
         local n = tonumber(raw)
@@ -306,6 +354,12 @@ subcommands.update = {
             Log:error("usage: :Msvc update <property> <value>")
             return
         end
+        if prop == "install_path" then
+            Log:warn(
+                "update: install_path is deprecated and ignored — set `vs_version` (and optionally `vswhere_path`) on your profile instead"
+            )
+            return
+        end
         local kind, expected
         if PROFILE_PROPS[prop] then
             kind = "profile"
@@ -349,6 +403,17 @@ subcommands.update = {
                 prop,
                 vim.inspect(value, { newline = "", indent = "" })
             )
+            -- vs_* / vswhere_path drive the VS install lookup. The
+            -- previously-resolved `state.install_path` is now stale, so
+            -- invalidate it and trigger a fresh resolve. We do BOTH a
+            -- synchronous resolve (so an immediately-following `:Msvc
+            -- status` shows the new path) and the async warm (to refresh
+            -- `vs_completion_candidates` for the `:Msvc update` tab
+            -- completion).
+            if prop:match("^vs_") or prop == "vswhere_path" then
+                msvc:_resolve_install_path_sync()
+                msvc:_warm_vs_installations()
+            end
         else
             msvc.state:set(prop, value)
             Log:info(
@@ -380,22 +445,29 @@ subcommands.update = {
             return startswith_filter(names, arglead)
         elseif arg_index == 2 then
             local prop = words[3]
-            if prop == "install_path" then
-                local installs = (msvc.vs_installations or {})
-                local paths = {}
-                for _, inst in ipairs(installs) do
-                    if type(inst.installationPath) == "string" then
-                        paths[#paths + 1] = inst.installationPath
+            if not prop then
+                return {}
+            end
+            -- Selection chain: dynamic (async-warmed) → static fallback
+            -- → registry-walking provider → empty. Dynamic sources may
+            -- still be empty between setup() and the async callback;
+            -- the fallback ensures completion never returns empty for a
+            -- known property.
+            local dyn_fn = dynamic_providers[prop]
+            if dyn_fn then
+                local ok, dyn = pcall(dyn_fn)
+                if ok then
+                    local vals = nonempty_list(dyn)
+                    if vals then
+                        return startswith_filter(vals, arglead)
                     end
                 end
-                table.sort(paths)
-                return startswith_filter(paths, arglead)
             end
-            local vals = prop and PROP_VALUES[prop]
-            if vals then
-                return startswith_filter(vals, arglead)
+            local fb = static_fallback[prop]
+            if fb then
+                return startswith_filter(fb, arglead)
             end
-            local provider = prop and PROP_VALUE_PROVIDERS[prop]
+            local provider = PROP_VALUE_PROVIDERS[prop]
             if provider then
                 local ok, dyn = pcall(provider)
                 if ok and type(dyn) == "table" then
