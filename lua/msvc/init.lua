@@ -71,8 +71,11 @@ end
 --- Scan for `.sln` candidates (git-aware, excluding submodules and the
 --- active profile's compile_commands `builddir`). When the previously
 --- active solution still appears in the candidate set it is preserved;
---- when a unique candidate is discovered it is auto-selected; otherwise
---- the user must pick one with `:Msvc solution <path>`.
+--- when a unique candidate is discovered it is auto-selected; when
+--- multiple candidates exist but exactly one sits in the project root
+--- (git toplevel, or cwd when not in a git tree) that root-level one
+--- is auto-selected; otherwise the user must pick one with
+--- `:Msvc solution <path>`.
 function Msvc:discover_solution()
     local prof = self:active_profile() or {}
     local cc = prof.compile_commands or {}
@@ -80,7 +83,8 @@ function Msvc:discover_solution()
     if type(cc.builddir) == "string" and cc.builddir ~= "" then
         extra_dirs[#extra_dirs + 1] = cc.builddir
     end
-    local cands = Discover.find_solutions(vim.fn.getcwd(), {
+    local cwd = vim.fn.getcwd()
+    local cands = Discover.find_solutions(cwd, {
         extra_dirs = extra_dirs,
     })
     self.solution_candidates = cands
@@ -100,8 +104,24 @@ function Msvc:discover_solution()
         if #cands == 1 then
             self.solution = cands[1]
         else
-            self.solution = nil
-            self.project = nil
+            local norm_cwd = Util.normalize_path(cwd)
+            local root = Discover._git_toplevel(norm_cwd) or norm_cwd
+            local root_lower = root and root ~= "" and root:lower() or nil
+            local in_root = {}
+            if root_lower then
+                for _, c in ipairs(cands) do
+                    local d = Util.dirname(c)
+                    if d and d:lower() == root_lower then
+                        in_root[#in_root + 1] = c
+                    end
+                end
+            end
+            if #in_root == 1 then
+                self.solution = in_root[1]
+            else
+                self.solution = nil
+                self.project = nil
+            end
         end
     end
     self.solution_projects = self.solution
