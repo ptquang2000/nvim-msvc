@@ -27,11 +27,11 @@ small, async, build/cancel/quickfix workflow modelled after
         require("msvc").setup({
             settings = {
                 default_profile = "release",
-                compile_commands = { builddir = "bin/cmake", outdir = "bin" },
             },
             default = {
                 msbuild_args = { "/nologo", "/v:minimal" },
                 jobs = 6,
+                compile_commands = { builddir = "bin/cmake", outdir = "bin" },
             },
             profiles = {
                 release = { configuration = "Release", platform = "x64" },
@@ -49,7 +49,7 @@ keys:
 
 | Key        | Purpose                                                                                |
 |------------|----------------------------------------------------------------------------------------|
-| `settings` | Plugin-wide knobs: `default_profile`, `log_level`, `build_on_save`, `compile_commands` |
+| `settings` | Plugin-wide knobs: `default_profile`, `log_level`, `build_on_save`                     |
 | `default`  | Profile fields merged under **every** named profile                                    |
 | `profiles` | Map of profile name → profile fields. `configuration` and `platform` are **required**  |
 
@@ -58,21 +58,22 @@ keys:
 Every field is optional except `configuration` and `platform`. They are
 shallow-merged in this order: **named profile** → **`default`**.
 
-| Field           | Type      | Notes                                                                |
-|-----------------|-----------|----------------------------------------------------------------------|
-| `configuration` | string    | `Debug` / `Release` / ... (auto-completed from `.sln` / `.vcxproj`)  |
-| `platform`      | string    | `Win32` / `x64` / `ARM64` (auto-completed from `.sln` / `.vcxproj`)  |
-| `arch`          | string    | `x86` / `x64` / `arm` / `arm64`. Toolchain arch passed to vcvarsall  |
-| `msbuild_args`  | string[]  | Extra MSBuild flags, verbatim (e.g. `{ "/nologo", "/v:minimal" }`)   |
-| `jobs`          | integer   | Translated to MSBuild `/m:<n>`                                       |
-| `target`        | string    | Default MSBuild `/t:<name>`. Overridden by `:Msvc build [target]`    |
-| `vs_version`    | string    | `latest` / `2017` / `2019` / `2022` / `17` / `17.10` / `[a,b]` range |
-| `vs_prerelease` | boolean   | Include prerelease installs in vswhere lookup                        |
-| `vs_products`   | string[]  | vswhere `-products`                                                  |
-| `vs_requires`   | string[]  | vswhere `-requires`                                                  |
-| `vswhere_path`  | string    | Explicit `vswhere.exe` path                                          |
-| `vcvars_ver`    | string    | Pin MSVC toolset (e.g. `14.16`). Auto-completed from VC\Tools\MSVC   |
-| `winsdk`        | string    | Pin Windows SDK (e.g. `10.0.17763.0`). Auto-completed from registry  |
+| Field              | Type      | Notes                                                                |
+|--------------------|-----------|----------------------------------------------------------------------|
+| `configuration`    | string    | `Debug` / `Release` / ... (auto-completed from `.sln` / `.vcxproj`)  |
+| `platform`         | string    | `Win32` / `x64` / `ARM64` (auto-completed from `.sln` / `.vcxproj`)  |
+| `arch`             | string    | `x86` / `x64` / `arm` / `arm64`. Toolchain arch passed to vcvarsall  |
+| `msbuild_args`     | string[]  | Extra MSBuild flags, verbatim (e.g. `{ "/nologo", "/v:minimal" }`)   |
+| `jobs`             | integer   | Translated to MSBuild `/m:<n>`                                       |
+| `target`           | string    | Default MSBuild `/t:<name>`. Overridden by `:Msvc build [target]`    |
+| `vs_version`       | string    | `latest` / `2017` / `2019` / `2022` / `17` / `17.10` / `[a,b]` range |
+| `vs_prerelease`    | boolean   | Include prerelease installs in vswhere lookup                        |
+| `vs_products`      | string[]  | vswhere `-products`                                                  |
+| `vs_requires`      | string[]  | vswhere `-requires`                                                  |
+| `vswhere_path`     | string    | Explicit `vswhere.exe` path                                          |
+| `vcvars_ver`       | string    | Pin MSVC toolset (e.g. `14.16`). Auto-completed from VC\Tools\MSVC   |
+| `winsdk`           | string    | Pin Windows SDK (e.g. `10.0.17763.0`). Auto-completed from registry  |
+| `compile_commands` | table     | `{ enabled, builddir, outdir, merge, deduplicate, extra_args }`      |
 
 ## Subcommands
 
@@ -85,9 +86,10 @@ shallow-merged in this order: **named profile** → **`default`**.
 :Msvc clean                 MSBuild /t:Clean
 :Msvc cancel                kill the in-flight build
 :Msvc profile [name]        switch active profile (no arg → list)
+:Msvc solution [path|-]     pick a .sln from discovered candidates ('-' clears)
 :Msvc project [path|-]      pin a .vcxproj as the build target ('-' clears)
 :Msvc update <field> <val>  override a profile field for this session
-:Msvc discover              re-scan cwd for a .sln
+:Msvc discover              re-scan repo for .sln files (git-tracked)
 :Msvc log                   open the live build-log buffer
 ```
 

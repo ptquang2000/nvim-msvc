@@ -20,6 +20,7 @@ local CompileCommands = require("msvc.compile_commands")
 ---@field install table|nil        last-resolved vswhere installation record
 ---@field overrides table          per-session overrides keyed by profile field
 ---@field solution_projects table  cached `{ name=, path= }` from the active sln
+---@field solution_candidates string[] paths of all `.sln` files reachable from cwd
 local Msvc = {
     config = Config.get_default_config(),
     solution = nil,
@@ -28,6 +29,7 @@ local Msvc = {
     install = nil,
     overrides = {},
     solution_projects = {},
+    solution_candidates = {},
     _setup_called = false,
 }
 
@@ -66,15 +68,46 @@ function Msvc:resolve_install(opts)
     return self.install
 end
 
---- Walk up from cwd to find a .sln; cache the result and parse its projects.
+--- Scan for `.sln` candidates (git-aware, excluding submodules and the
+--- active profile's compile_commands `builddir`). When the previously
+--- active solution still appears in the candidate set it is preserved;
+--- when a unique candidate is discovered it is auto-selected; otherwise
+--- the user must pick one with `:Msvc solution <path>`.
 function Msvc:discover_solution()
-    local sln, err = Discover.find_solution(vim.fn.getcwd())
-    if err then
-        log_warn("msvc: %s", err)
+    local prof = self:active_profile() or {}
+    local cc = prof.compile_commands or {}
+    local extra_dirs = {}
+    if type(cc.builddir) == "string" and cc.builddir ~= "" then
+        extra_dirs[#extra_dirs + 1] = cc.builddir
     end
-    self.solution = sln
-    self.solution_projects = sln and Discover.parse_solution_projects(sln) or {}
-    return sln
+    local cands = Discover.find_solutions(vim.fn.getcwd(), {
+        extra_dirs = extra_dirs,
+    })
+    self.solution_candidates = cands
+
+    local current = self.solution
+    local kept = false
+    if current and Util.is_file(current) then
+        local lower = current:lower()
+        for _, c in ipairs(cands) do
+            if c:lower() == lower then
+                kept = true
+                break
+            end
+        end
+    end
+    if not kept then
+        if #cands == 1 then
+            self.solution = cands[1]
+        else
+            self.solution = nil
+            self.project = nil
+        end
+    end
+    self.solution_projects = self.solution
+            and Discover.parse_solution_projects(self.solution)
+        or {}
+    return self.solution_candidates
 end
 
 --- Set the active profile by name. Returns true on success.
@@ -125,6 +158,47 @@ function Msvc:set_project(path)
         return false
     end
     self.project = norm
+    return true
+end
+
+--- Select an active solution from the discovered candidate set, by
+--- absolute path or basename. Pass nil / "" / "-" to clear. Switching
+--- solutions clears any pinned project (it almost certainly belongs to
+--- the previous solution) and refreshes `solution_projects` so the
+--- `:Msvc project` completion list reflects the new sln.
+function Msvc:set_solution(path)
+    if path == nil or path == "" then
+        self.solution = nil
+        self.solution_projects = {}
+        self.project = nil
+        return true
+    end
+    local cands = self.solution_candidates or {}
+    -- Match against full path or basename within the candidate set.
+    for _, cand in ipairs(cands) do
+        if cand == path or cand:lower() == tostring(path):lower() then
+            self.solution = cand
+            self.solution_projects = Discover.parse_solution_projects(cand)
+            self.project = nil
+            return true
+        end
+    end
+    for _, cand in ipairs(cands) do
+        if Util.basename(cand) == path then
+            self.solution = cand
+            self.solution_projects = Discover.parse_solution_projects(cand)
+            self.project = nil
+            return true
+        end
+    end
+    local norm = Util.normalize_path(path)
+    if not norm or not Util.is_file(norm) then
+        Log:error("msvc: solution not found: %s", tostring(path))
+        return false
+    end
+    self.solution = norm
+    self.solution_projects = Discover.parse_solution_projects(norm)
+    self.project = nil
     return true
 end
 
@@ -220,7 +294,7 @@ function Msvc:cancel()
 end
 
 function Msvc:_run_compile_commands(prof, install_path)
-    local cc = self.config.settings.compile_commands or {}
+    local cc = (prof and prof.compile_commands) or {}
     if not CompileCommands.is_enabled(cc) then
         return
     end
@@ -235,7 +309,7 @@ function Msvc:_run_compile_commands(prof, install_path)
         winsdk = prof.winsdk,
     })
     if err then
-        Log:warn("msvc: compile_commands: %s", err)
+        Log:build_append("compile_commands [WARN]: %s", err)
         return
     end
     local extra_projects = {}

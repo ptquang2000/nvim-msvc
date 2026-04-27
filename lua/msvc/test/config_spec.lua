@@ -15,18 +15,20 @@ describe("msvc.config", function()
             settings = {
                 default_profile = "dbg",
                 build_on_save = true,
+            },
+            default = {
+                jobs = 4,
                 compile_commands = { builddir = "out/cmake" },
             },
-            default = { jobs = 4 },
             profiles = {
                 dbg = { configuration = "Debug", platform = "x64" },
             },
         })
         assert.are.equal("dbg", cfg.settings.default_profile)
         assert.is_true(cfg.settings.build_on_save)
-        assert.are.equal("out/cmake", cfg.settings.compile_commands.builddir)
-        -- defaults preserved when not overridden
-        assert.are.equal("bin", cfg.settings.compile_commands.outdir)
+        assert.are.equal("out/cmake", cfg.default.compile_commands.builddir)
+        -- defaults preserved when user overrides only one key
+        assert.are.equal("bin", cfg.default.compile_commands.outdir)
         assert.are.equal(4, cfg.default.jobs)
     end)
 

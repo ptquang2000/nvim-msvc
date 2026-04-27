@@ -9,6 +9,22 @@ local M = {}
 
 M.EXTRACTOR_BIN = "msbuild-extractor-sample"
 
+local function cc_info(fmt, ...)
+    Log:build_append("compile_commands: " .. fmt, ...)
+end
+
+local function cc_warn(fmt, ...)
+    Log:build_append("compile_commands [WARN]: " .. fmt, ...)
+end
+
+local function cc_error(fmt, ...)
+    Log:build_append("compile_commands [ERROR]: " .. fmt, ...)
+end
+
+local function cc_debug(fmt, ...)
+    Log:debug("compile_commands: " .. fmt, ...)
+end
+
 function M.find_extractor()
     if M._extractor_path ~= nil then
         return M._extractor_path or nil
@@ -72,10 +88,7 @@ local function collect_builddir_vcxprojs(builddir, solution, project)
     local resolved = Util.resolve_path(builddir, anchor) or builddir
     local norm = Util.normalize_path(resolved) or resolved
     if not Util.is_dir(norm) then
-        Log:warn(
-            "compile_commands: builddir does not exist: %s",
-            tostring(norm)
-        )
+        -- cc_warn("builddir does not exist: %s", tostring(norm))
         return {}
     end
     return Discover.find_vcxprojs(norm)
@@ -127,16 +140,13 @@ function M.generate(opts)
     end
     local solution, project = opts.solution, opts.project
     if (not solution or solution == "") and (not project or project == "") then
-        Log:warn("compile_commands: no solution / project to extract from")
+        cc_warn("no solution / project to extract from")
         return false
     end
 
     local outpath = resolve_outpath(cc.outdir, solution, project)
     if not outpath then
-        Log:error(
-            "compile_commands: could not resolve output directory %q",
-            tostring(cc.outdir)
-        )
+        cc_error("could not resolve output directory %q", tostring(cc.outdir))
         return false
     end
 
@@ -171,8 +181,8 @@ function M.generate(opts)
     if not exe then
         if not M._missing_warned then
             M._missing_warned = true
-            Log:warn(
-                "compile_commands: %s not found on PATH — install from https://github.com/microsoft/msbuild-extractor-sample",
+            cc_warn(
+                "%s not found on PATH — install from https://github.com/microsoft/msbuild-extractor-sample",
                 M.EXTRACTOR_BIN
             )
         end
@@ -191,12 +201,8 @@ function M.generate(opts)
         extra_args = cc.extra_args,
         vs_path = opts.vs_path,
     })
-    Log:info(
-        "compile_commands: generating %s (%d project(s))",
-        outpath,
-        #projects
-    )
-    Log:debug("compile_commands: argv = %s", vim.inspect(argv))
+    cc_info("generating %s (%d project(s))", outpath, #projects)
+    cc_debug("argv = %s", vim.inspect(argv))
 
     if vim.uv and vim.uv.fs_unlink then
         pcall(vim.uv.fs_unlink, outpath)
@@ -212,10 +218,10 @@ function M.generate(opts)
             vim.schedule(function()
                 local ok = res and res.code == 0
                 if ok then
-                    Log:info("compile_commands: wrote %s", outpath)
+                    cc_info("wrote %s", outpath)
                 else
-                    Log:error(
-                        "compile_commands: extractor exit %d%s",
+                    cc_error(
+                        "extractor exit %d%s",
                         res and res.code or -1,
                         (res and res.stderr and res.stderr ~= "")
                                 and (": " .. res.stderr:gsub("%s+$", ""))
@@ -229,7 +235,7 @@ function M.generate(opts)
         end)
     end)
     if not ok_spawn then
-        Log:error("compile_commands: spawn failed: %s", tostring(err))
+        cc_error("spawn failed: %s", tostring(err))
         return false
     end
     return true

@@ -19,6 +19,7 @@ M.PROFILE_FIELDS = {
     "vswhere_path",
     "vcvars_ver",
     "winsdk",
+    "compile_commands",
 }
 
 local PROFILE_FIELD_SET = {}
@@ -36,6 +37,13 @@ function M.get_default_config()
             default_profile = nil,
             log_level = "info",
             build_on_save = false,
+        },
+        default = {
+            msbuild_args = { "/nologo", "/v:minimal" },
+            jobs = nil,
+            arch = "x64",
+            vs_version = "latest",
+            vs_prerelease = false,
             compile_commands = {
                 enabled = true,
                 builddir = "bin/cmake",
@@ -44,13 +52,6 @@ function M.get_default_config()
                 deduplicate = true,
                 extra_args = {},
             },
-        },
-        default = {
-            msbuild_args = { "/nologo", "/v:minimal" },
-            jobs = nil,
-            arch = "x64",
-            vs_version = "latest",
-            vs_prerelease = false,
         },
         profiles = {},
     }
@@ -85,19 +86,24 @@ function M.merge_config(user)
 
     if type(user.settings) == "table" then
         for k, v in pairs(user.settings) do
-            if k == "compile_commands" and type(v) == "table" then
-                for kk, vv in pairs(v) do
-                    out.settings.compile_commands[kk] = copy_value(vv)
-                end
-            else
-                out.settings[k] = copy_value(v)
-            end
+            out.settings[k] = copy_value(v)
         end
     end
 
     if type(user.default) == "table" then
         for k, v in pairs(user.default) do
-            out.default[k] = copy_value(v)
+            if k == "compile_commands" and type(v) == "table" then
+                local merged = {}
+                for kk, vv in pairs(out.default.compile_commands or {}) do
+                    merged[kk] = copy_value(vv)
+                end
+                for kk, vv in pairs(v) do
+                    merged[kk] = copy_value(vv)
+                end
+                out.default.compile_commands = merged
+            else
+                out.default[k] = copy_value(v)
+            end
         end
     end
 
@@ -170,12 +176,10 @@ function M.validate(config)
         s.build_on_save == nil or type(s.build_on_save) == "boolean",
         "msvc.config: settings.build_on_save must be a boolean"
     )
-    if s.compile_commands ~= nil then
-        assert(
-            type(s.compile_commands) == "table",
-            "msvc.config: settings.compile_commands must be a table"
-        )
-    end
+    assert(
+        s.compile_commands == nil,
+        "msvc.config: settings.compile_commands has moved to a profile field — set it under `default = { compile_commands = {...} }` or per-profile"
+    )
 
     for _, k in ipairs({ "default" }) do
         assert(
@@ -239,6 +243,14 @@ function M.validate(config)
             assert(
                 type(merged.msbuild_args) == "table",
                 ("msvc.config: profile %q msbuild_args must be a table"):format(
+                    name
+                )
+            )
+        end
+        if merged.compile_commands ~= nil then
+            assert(
+                type(merged.compile_commands) == "table",
+                ("msvc.config: profile %q compile_commands must be a table"):format(
                     name
                 )
             )

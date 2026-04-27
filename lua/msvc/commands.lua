@@ -26,21 +26,6 @@ local function format_status(msvc)
     else
         lines[#lines + 1] = "install  = <unresolved>"
     end
-    if msvc.config.settings.compile_commands then
-        local cc = msvc.config.settings.compile_commands
-        lines[#lines + 1] = "compile_commands"
-        for _, k in ipairs({
-            "enabled",
-            "builddir",
-            "outdir",
-            "merge",
-            "deduplicate",
-        }) do
-            if cc[k] ~= nil then
-                lines[#lines + 1] = ("  %s = %s"):format(k, vim.inspect(cc[k]))
-            end
-        end
-    end
     if not prof then
         lines[#lines + 1] = "profile  = <none>"
     else
@@ -101,18 +86,81 @@ SUBCOMMANDS.cancel = {
 }
 
 SUBCOMMANDS.discover = {
-    desc = "re-scan cwd for a .sln",
+    desc = "re-scan for .sln files (git-tracked, excluding submodules + builddir)",
     run = function(msvc)
-        local sln = msvc:discover_solution()
-        if sln then
+        local cands = msvc:discover_solution()
+        if msvc.solution then
             Log:info(
-                "msvc: solution = %s (%d projects)",
-                sln,
-                #msvc.solution_projects
+                "msvc: solution = %s (%d projects, %d candidate%s)",
+                msvc.solution,
+                #msvc.solution_projects,
+                #cands,
+                #cands == 1 and "" or "s"
             )
+        elseif #cands > 0 then
+            Log:warn(
+                "msvc: %d .sln candidate(s); pick one with `:Msvc solution <path>`",
+                #cands
+            )
+            for _, c in ipairs(cands) do
+                print_lines({ "  " .. c })
+            end
         else
             Log:warn("msvc: no .sln found in or above %s", vim.fn.getcwd())
         end
+    end,
+}
+
+local function solution_completion_candidates(msvc)
+    local cands = msvc.solution_candidates or {}
+    local count = {}
+    for _, c in ipairs(cands) do
+        local base = Util.basename(c)
+        count[base] = (count[base] or 0) + 1
+    end
+    local out = {}
+    local seen = {}
+    for _, c in ipairs(cands) do
+        local base = Util.basename(c)
+        local label = (count[base] == 1) and base or c
+        if not seen[label] then
+            seen[label] = true
+            out[#out + 1] = label
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+SUBCOMMANDS.solution = {
+    desc = "select a .sln from discovered candidates ('-' clears)",
+    run = function(msvc, args)
+        if #args == 0 then
+            local cands = msvc.solution_candidates or {}
+            print_lines({ "solution = " .. (msvc.solution or "<none>") })
+            print_lines({ ("candidates (%d):"):format(#cands) })
+            for _, c in ipairs(cands) do
+                local mark = (msvc.solution and c == msvc.solution) and "* "
+                    or "  "
+                print_lines({ mark .. c })
+            end
+            return
+        end
+        if args[1] == "-" or args[1] == "none" then
+            msvc:set_solution(nil)
+            Log:info("msvc: cleared active solution")
+            return
+        end
+        if msvc:set_solution(args[1]) then
+            Log:info(
+                "msvc: solution = %s (%d projects)",
+                msvc.solution,
+                #msvc.solution_projects
+            )
+        end
+    end,
+    complete = function(msvc, _arglead)
+        return solution_completion_candidates(msvc)
     end,
 }
 

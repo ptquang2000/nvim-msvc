@@ -47,6 +47,149 @@ function M.find_solution(start_dir)
     return find_solution(start_dir)
 end
 
+--- Run `git -C <dir> <args...>` synchronously and return stdout (or nil
+--- on failure / non-zero exit). Lightweight wrapper used by the
+--- git-aware solution scanner.
+local function git_capture(dir, args)
+    local argv = { "git", "-C", dir }
+    for _, a in ipairs(args) do
+        argv[#argv + 1] = a
+    end
+    local ok, res = pcall(function()
+        return vim.system(argv, { text = true }):wait()
+    end)
+    if not ok or not res or res.code ~= 0 then
+        return nil
+    end
+    return res.stdout or ""
+end
+
+local function git_toplevel(start_dir)
+    local out = git_capture(start_dir, { "rev-parse", "--show-toplevel" })
+    if not out then
+        return nil
+    end
+    local p = out:gsub("[\r\n]+$", "")
+    if p == "" then
+        return nil
+    end
+    return Util.normalize_path(p)
+end
+
+local function git_ls_files(root)
+    -- `git ls-files` defaults to tracked files in the current repo only.
+    -- It does NOT recurse into submodules, so submodule contents are
+    -- naturally excluded.
+    local out = git_capture(root, { "ls-files" })
+    if not out then
+        return nil
+    end
+    local list = {}
+    for line in out:gmatch("[^\r\n]+") do
+        list[#list + 1] = line
+    end
+    return list
+end
+
+M._git_toplevel = git_toplevel
+M._git_ls_files = git_ls_files
+
+local function build_dir_set(start_dir, dirs)
+    local out = {}
+    for _, d in ipairs(dirs or {}) do
+        if type(d) == "string" and d ~= "" then
+            local abs = Util.resolve_path(d, start_dir)
+            local norm = abs and Util.normalize_path(abs) or nil
+            if norm and norm ~= "" and Util.is_dir(norm) then
+                out[#out + 1] = norm
+            end
+        end
+    end
+    return out
+end
+
+local function scan_slns_in_dir(dir)
+    local matches = vim.fn.globpath(dir, "**/*.sln", true, true)
+    if type(matches) ~= "table" then
+        return {}
+    end
+    local out = {}
+    for _, p in ipairs(matches) do
+        local norm = Util.normalize_path(p)
+        if norm and Util.is_file(norm) then
+            out[#out + 1] = norm
+        end
+    end
+    return out
+end
+
+--- List candidate `.sln` files reachable from `start_dir`. When inside a
+--- git working tree, only tracked files are considered (so submodule
+--- contents and .gitignored output dirs are excluded automatically).
+--- Otherwise falls back to the upward walk used by `find_solution`.
+---
+--- `opts.extra_dirs` is a list of paths (absolute or relative to
+--- `start_dir`) whose contents should be scanned on the filesystem and
+--- merged into the result — typically the active profile's
+--- compile_commands `builddir`, which usually contains generated `.sln`
+--- files that git does not track.
+---@param start_dir string|nil
+---@param opts { extra_dirs: string[]|nil }|nil
+---@return string[]
+function M.find_solutions(start_dir, opts)
+    opts = opts or {}
+    local cwd = Util.normalize_path(start_dir or vim.fn.getcwd())
+    if not cwd or cwd == "" then
+        return {}
+    end
+    local extra_dirs = build_dir_set(cwd, opts.extra_dirs)
+
+    local out = {}
+    local seen = {}
+    local function add(abs)
+        if not abs or abs == "" then
+            return
+        end
+        local key = abs:lower()
+        if seen[key] then
+            return
+        end
+        seen[key] = true
+        out[#out + 1] = abs
+    end
+
+    local root = git_toplevel(cwd)
+    if root then
+        local files = git_ls_files(root)
+        if files then
+            for _, rel in ipairs(files) do
+                if rel:lower():match("%.sln$") then
+                    local abs = Util.normalize_path(
+                        Util.join_path(root, rel)
+                    )
+                    if abs and Util.is_file(abs) then
+                        add(abs)
+                    end
+                end
+            end
+        end
+    else
+        local single, _ = find_solution(cwd)
+        if single then
+            add(single)
+        end
+    end
+
+    for _, dir in ipairs(extra_dirs) do
+        for _, abs in ipairs(scan_slns_in_dir(dir)) do
+            add(abs)
+        end
+    end
+
+    table.sort(out)
+    return out
+end
+
 --- Scan a directory tree for `.vcxproj` files. Bounded by `max_files`.
 function M.find_vcxprojs(root, opts)
     opts = opts or {}

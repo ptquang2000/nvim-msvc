@@ -165,6 +165,21 @@ function MsvcLog:show_build()
     ensure_live_win(self)
 end
 
+--- Append a line to the live build-log buffer regardless of whether a
+--- build is in flight. Used by the post-build compile_commands step so
+--- its progress / errors appear in the same buffer as MSBuild output.
+--- The buffer is created on demand if it doesn't already exist.
+function MsvcLog:build_append(msg, ...)
+    local text = format_msg(msg, ...)
+    local self_ref = self
+    vim.schedule(function()
+        local buf = ensure_live_buf(self_ref)
+        if vim.api.nvim_buf_is_valid(buf) then
+            append_line(buf, text)
+        end
+    end)
+end
+
 --- Wire the live-tail listener to the extension bus. Idempotent.
 function MsvcLog:install_live_tail()
     if self._tail_installed then

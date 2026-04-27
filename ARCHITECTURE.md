@@ -13,7 +13,7 @@ lua/msvc/
   build.lua             Spawn MSBuild via vim.system; cancel via taskkill /T /F /PID.
   devenv.lua            Run vcvarsall.bat in cmd.exe; cache the resulting env.
   vswhere.lua           JSON wrapper around vswhere.exe (sync + async).
-  discover.lua          Walk-up to find .sln; parse its projects + their (config, platform).
+  discover.lua          Locate .sln candidates (git ls-files excluding submodules, plus filesystem scan of profile.compile_commands.builddir); parse projects.
   compile_commands.lua  Drive msbuild-extractor-sample after a successful build.
   quickfix.lua          Parse MSBuild output through Vim's errorformat.
   log.lua               vim.notify wrapper + live-tail buffer for build output.
@@ -26,15 +26,16 @@ lua/msvc/
 
 The plugin keeps **one** runtime object — the `Msvc` singleton:
 
-| Field               | Description                                                       |
-|---------------------|-------------------------------------------------------------------|
-| `config`            | Merged + validated config table                                   |
-| `solution`          | Auto-discovered `.sln` (walk-up from cwd)                         |
-| `project`           | Optional pinned `.vcxproj`                                        |
-| `profile_name`      | Active profile name                                               |
-| `install`           | Last vswhere installation record (with `installationPath`, etc.)  |
-| `overrides`         | Per-session profile-field overrides set via `:Msvc update`        |
-| `solution_projects` | `{ name, path }` parsed from the active `.sln`                    |
+| Field                 | Description                                                       |
+|-----------------------|-------------------------------------------------------------------|
+| `config`              | Merged + validated config table                                   |
+| `solution`            | Active `.sln` (auto-selected from candidates or via `:Msvc solution`) |
+| `solution_candidates` | All `.sln` files discovered in the repo                           |
+| `project`             | Optional pinned `.vcxproj`                                        |
+| `profile_name`        | Active profile name                                               |
+| `install`             | Last vswhere installation record (with `installationPath`, etc.)  |
+| `overrides`           | Per-session profile-field overrides set via `:Msvc update`        |
+| `solution_projects`   | `{ name, path }` parsed from the active `.sln`                    |
 
 ## Build lifecycle
 

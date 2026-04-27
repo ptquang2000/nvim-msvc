@@ -125,9 +125,10 @@ end
 
 local function check_compile_commands(msvc)
     start("nvim-msvc: compile_commands.json")
-    local cc = msvc.config.settings.compile_commands
+    local prof = msvc:active_profile() or {}
+    local cc = prof.compile_commands
     if not CompileCommands.is_enabled(cc) then
-        info("disabled (settings.compile_commands.enabled = false)")
+        info("disabled (profile.compile_commands.enabled = false)")
         return
     end
     CompileCommands.reset_cache()

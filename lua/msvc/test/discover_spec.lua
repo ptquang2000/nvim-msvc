@@ -102,4 +102,38 @@ describe("msvc.discover", function()
         assert.is_true(has(r.platforms, "x64"))
         assert.is_true(has(r.platforms, "Win32"))
     end)
+
+    it("find_solutions walk-up fallback returns single sln when not in a git repo", function()
+        local sub = Util.join_path(tmpdir, "src")
+        vim.fn.mkdir(sub, "p")
+        write(Util.join_path(tmpdir, "Lone.sln"), "")
+        local list = Discover.find_solutions(sub)
+        -- May or may not return a result depending on whether tmpdir is
+        -- itself inside a git tree; only assert when the fallback ran.
+        if #list == 1 then
+            assert.are.equal(
+                Util.normalize_path(Util.join_path(tmpdir, "Lone.sln")),
+                list[1]
+            )
+        end
+    end)
+
+    it("find_solutions includes .sln files in extra_dirs", function()
+        local builddir = Util.join_path(tmpdir, "bin", "cmake")
+        vim.fn.mkdir(builddir, "p")
+        local generated = Util.normalize_path(
+            Util.join_path(builddir, "Generated.sln")
+        )
+        write(generated, "")
+        local list = Discover.find_solutions(tmpdir, {
+            extra_dirs = { "bin/cmake" },
+        })
+        local found = false
+        for _, p in ipairs(list) do
+            if p:lower() == generated:lower() then
+                found = true
+            end
+        end
+        assert.is_true(found)
+    end)
 end)

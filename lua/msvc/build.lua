@@ -127,15 +127,16 @@ function M.spawn(opts)
             local elapsed_ms = math.floor((vim.uv.hrtime() - started_at) / 1e6)
             local code = res and res.code or -1
             local success = (not job.cancelled) and code == 0
-            local n = QuickFix.from_build_output(job.lines, {
+            local _ = QuickFix.from_build_output(job.lines, {
                 title = ("MSBuild [%s|%s]"):format(
                     opts.configuration,
                     opts.platform
                 ),
+                open = true,
             })
-            if n > 0 then
-                Log:info("build: %d quickfix entries", n)
-            end
+            -- if n > 0 then
+            --     Log:info("build: %d quickfix entries", n)
+            -- end
             Ext.extensions:emit(
                 Ext.event_names.BUILD_DONE,
                 success,
