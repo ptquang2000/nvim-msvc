@@ -107,7 +107,7 @@ describe("msvc.config", function()
         assert.is_truthy(joined:find("wibble", 1, true))
     end)
 
-    it("list_profile_names excludes the configured default_profile", function()
+    it("list_profile_names includes the configured default_profile", function()
         local Config = require("msvc.config")
         local cfg = Config.merge_config({
             settings = { default_profile = "base" },
@@ -118,8 +118,21 @@ describe("msvc.config", function()
             },
         })
         local names = Config.list_profile_names(cfg)
-        assert.same({ "driver", "grsc" }, names)
+        assert.same({ "base", "driver", "grsc" }, names)
     end)
+
+    it(
+        "list_profile_names ignores a default_profile that has no matching profile entry",
+        function()
+            local Config = require("msvc.config")
+            local cfg = Config.merge_config({
+                settings = { default_profile = "ghost" },
+                profiles = { grsc = {}, driver = {} },
+            })
+            local names = Config.list_profile_names(cfg)
+            assert.same({ "driver", "grsc" }, names)
+        end
+    )
 
     it(
         "list_profile_names without default_profile lists every profile",

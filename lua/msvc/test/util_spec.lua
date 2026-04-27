@@ -62,53 +62,59 @@ describe("msvc.util", function()
         assert.equals("", Util.extension("Makefile"))
     end)
 
-    it("is_absolute detects Windows drive, UNC, POSIX, and rejects relative", function()
-        local Util = require("msvc.util")
-        -- Windows drive-letter (back- or forward-slash, with or without sep)
-        assert.is_true(Util.is_absolute("C:\\foo"))
-        assert.is_true(Util.is_absolute("c:/foo"))
-        assert.is_true(Util.is_absolute("D:\\"))
-        assert.is_true(Util.is_absolute("D:"))
-        -- UNC
-        assert.is_true(Util.is_absolute("\\\\server\\share\\dir"))
-        assert.is_true(Util.is_absolute("//server/share/dir"))
-        -- POSIX-style
-        assert.is_true(Util.is_absolute("/etc/passwd"))
-        -- Relative / empty
-        assert.is_false(Util.is_absolute("build"))
-        assert.is_false(Util.is_absolute("..\\build"))
-        assert.is_false(Util.is_absolute("./out"))
-        assert.is_false(Util.is_absolute(""))
-        assert.is_false(Util.is_absolute(nil))
-    end)
+    it(
+        "is_absolute detects Windows drive, UNC, POSIX, and rejects relative",
+        function()
+            local Util = require("msvc.util")
+            -- Windows drive-letter (back- or forward-slash, with or without sep)
+            assert.is_true(Util.is_absolute("C:\\foo"))
+            assert.is_true(Util.is_absolute("c:/foo"))
+            assert.is_true(Util.is_absolute("D:\\"))
+            assert.is_true(Util.is_absolute("D:"))
+            -- UNC
+            assert.is_true(Util.is_absolute("\\\\server\\share\\dir"))
+            assert.is_true(Util.is_absolute("//server/share/dir"))
+            -- POSIX-style
+            assert.is_true(Util.is_absolute("/etc/passwd"))
+            -- Relative / empty
+            assert.is_false(Util.is_absolute("build"))
+            assert.is_false(Util.is_absolute("..\\build"))
+            assert.is_false(Util.is_absolute("./out"))
+            assert.is_false(Util.is_absolute(""))
+            assert.is_false(Util.is_absolute(nil))
+        end
+    )
 
-    it("resolve_path joins relative against anchor; absolute pass-through", function()
-        local Util = require("msvc.util")
-        -- Absolute pass-through (normalized).
-        assert.equals(
-            "C:\\already\\abs",
-            Util.resolve_path("C:/already/abs", "C:\\anchor")
-        )
-        -- Relative joined under anchor.
-        assert.equals(
-            "C:\\anchor\\build",
-            Util.resolve_path("build", "C:\\anchor")
-        )
-        -- Trailing slash on anchor is normalized away.
-        assert.equals(
-            "C:\\anchor\\out",
-            Util.resolve_path("out", "C:\\anchor\\")
-        )
-        -- ".." segments survive (we don't canonicalize) but join cleanly.
-        assert.equals(
-            "C:\\anchor\\..\\sib",
-            Util.resolve_path("..\\sib", "C:\\anchor")
-        )
-        -- No anchor → just normalize.
-        assert.equals("build", Util.resolve_path("build", nil))
-        assert.equals("build", Util.resolve_path("build", ""))
-        -- Empty / nil input → nil.
-        assert.is_nil(Util.resolve_path("", "C:\\anchor"))
-        assert.is_nil(Util.resolve_path(nil, "C:\\anchor"))
-    end)
+    it(
+        "resolve_path joins relative against anchor; absolute pass-through",
+        function()
+            local Util = require("msvc.util")
+            -- Absolute pass-through (normalized).
+            assert.equals(
+                "C:\\already\\abs",
+                Util.resolve_path("C:/already/abs", "C:\\anchor")
+            )
+            -- Relative joined under anchor.
+            assert.equals(
+                "C:\\anchor\\build",
+                Util.resolve_path("build", "C:\\anchor")
+            )
+            -- Trailing slash on anchor is normalized away.
+            assert.equals(
+                "C:\\anchor\\out",
+                Util.resolve_path("out", "C:\\anchor\\")
+            )
+            -- ".." segments survive (we don't canonicalize) but join cleanly.
+            assert.equals(
+                "C:\\anchor\\..\\sib",
+                Util.resolve_path("..\\sib", "C:\\anchor")
+            )
+            -- No anchor → just normalize.
+            assert.equals("build", Util.resolve_path("build", nil))
+            assert.equals("build", Util.resolve_path("build", ""))
+            -- Empty / nil input → nil.
+            assert.is_nil(Util.resolve_path("", "C:\\anchor"))
+            assert.is_nil(Util.resolve_path(nil, "C:\\anchor"))
+        end
+    )
 end)

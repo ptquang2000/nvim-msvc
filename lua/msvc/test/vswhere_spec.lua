@@ -92,10 +92,7 @@ describe("msvc.vswhere build_args", function()
             vs_products = { "Microsoft.VisualStudio.Product.Professional" },
         })
         assert.are.equal("-products", args[1])
-        assert.are.equal(
-            "Microsoft.VisualStudio.Product.Professional",
-            args[2]
-        )
+        assert.are.equal("Microsoft.VisualStudio.Product.Professional", args[2])
         -- '*' must not appear right after -products
         assert.is_false(args[3] == "*")
     end)

@@ -69,104 +69,118 @@ describe("msvc.compile_commands", function()
         }, argv)
     end)
 
-    it("build_argv emits --vs-path when supplied and omits dev-env / msbuild-path", function()
-        local CC = require("msvc.compile_commands")
-        local argv = CC._internal.build_argv({
-            extractor = "msbuild-extractor-sample",
-            solution = "app.sln",
-            projects = {},
-            configuration = "Debug",
-            platform = "x64",
-            outpath = "out.json",
-            vs_path = "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
-        })
-        assert.same({
-            "msbuild-extractor-sample",
-            "--solution",
-            "app.sln",
-            "-c",
-            "Debug",
-            "-a",
-            "x64",
-            "--vs-path",
-            "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
-            "-o",
-            "out.json",
-            "--merge",
-            "--deduplicate",
-        }, argv)
-    end)
-
-    it("build_argv omits --vs-path when not supplied and never emits --use-dev-env / --msbuild-path", function()
-        local CC = require("msvc.compile_commands")
-        local argv = CC._internal.build_argv({
-            extractor = "msbuild-extractor-sample",
-            solution = "app.sln",
-            projects = {},
-            configuration = "Debug",
-            platform = "x64",
-            outpath = "out.json",
-        })
-        for _, a in ipairs(argv) do
-            assert.is_not.equal("--use-dev-env", a)
-            assert.is_not.equal("--msbuild-path", a)
-            assert.is_not.equal("--vs-path", a)
-        end
-    end)
-
-    it("generate forwards active project and extra_projects to argv (deduplicated)", function()
-        local CC = require("msvc.compile_commands")
-        -- Ensure find_extractor returns a value so generate doesn't bail out.
-        local orig_find = CC.find_extractor
-        CC.find_extractor = function()
-            return "C:/tools/msbuild-extractor-sample.exe"
-        end
-        local orig_system = vim.system
-        local captured_argv
-        vim.system = function(argv, _, _)
-            captured_argv = argv
-            return { wait = function() return { code = 0 } end }
-        end
-        local ok, err = pcall(function()
-            CC.generate({
-                solution = "C:/repo/app.sln",
-                project = "C:/repo/src/active.vcxproj",
-                extra_projects = {
-                    "C:/repo/src/active.vcxproj", -- duplicate of active
-                    "C:/repo/src/other.vcxproj",
-                    "not-a-vcxproj.txt", -- filtered out
-                },
+    it(
+        "build_argv emits --vs-path when supplied and omits dev-env / msbuild-path",
+        function()
+            local CC = require("msvc.compile_commands")
+            local argv = CC._internal.build_argv({
+                extractor = "msbuild-extractor-sample",
+                solution = "app.sln",
+                projects = {},
                 configuration = "Debug",
                 platform = "x64",
-                cc = { enabled = true, outdir = "out" },
+                outpath = "out.json",
+                vs_path = "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
             })
-        end)
-        CC.find_extractor = orig_find
-        vim.system = orig_system
-        assert.is_true(ok, tostring(err))
-        assert.is_table(captured_argv)
-        local projs = {}
-        for i, a in ipairs(captured_argv) do
-            if a == "--project" then
-                projs[#projs + 1] = captured_argv[i + 1]
+            assert.same({
+                "msbuild-extractor-sample",
+                "--solution",
+                "app.sln",
+                "-c",
+                "Debug",
+                "-a",
+                "x64",
+                "--vs-path",
+                "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional",
+                "-o",
+                "out.json",
+                "--merge",
+                "--deduplicate",
+            }, argv)
+        end
+    )
+
+    it(
+        "build_argv omits --vs-path when not supplied and never emits --use-dev-env / --msbuild-path",
+        function()
+            local CC = require("msvc.compile_commands")
+            local argv = CC._internal.build_argv({
+                extractor = "msbuild-extractor-sample",
+                solution = "app.sln",
+                projects = {},
+                configuration = "Debug",
+                platform = "x64",
+                outpath = "out.json",
+            })
+            for _, a in ipairs(argv) do
+                assert.is_not.equal("--use-dev-env", a)
+                assert.is_not.equal("--msbuild-path", a)
+                assert.is_not.equal("--vs-path", a)
             end
         end
-        -- active project present exactly once, plus the unique extra
-        local saw_active, saw_other, dupes = 0, 0, 0
-        for _, p in ipairs(projs) do
-            if p:lower():find("active%.vcxproj$") then
-                saw_active = saw_active + 1
-            elseif p:lower():find("other%.vcxproj$") then
-                saw_other = saw_other + 1
+    )
+
+    it(
+        "generate forwards active project and extra_projects to argv (deduplicated)",
+        function()
+            local CC = require("msvc.compile_commands")
+            -- Ensure find_extractor returns a value so generate doesn't bail out.
+            local orig_find = CC.find_extractor
+            CC.find_extractor = function()
+                return "C:/tools/msbuild-extractor-sample.exe"
+            end
+            local orig_system = vim.system
+            local captured_argv
+            vim.system = function(argv, _, _)
+                captured_argv = argv
+                return {
+                    wait = function()
+                        return { code = 0 }
+                    end,
+                }
+            end
+            local ok, err = pcall(function()
+                CC.generate({
+                    solution = "C:/repo/app.sln",
+                    project = "C:/repo/src/active.vcxproj",
+                    extra_projects = {
+                        "C:/repo/src/active.vcxproj", -- duplicate of active
+                        "C:/repo/src/other.vcxproj",
+                        "not-a-vcxproj.txt", -- filtered out
+                    },
+                    configuration = "Debug",
+                    platform = "x64",
+                    cc = { enabled = true, outdir = "out" },
+                })
+            end)
+            CC.find_extractor = orig_find
+            vim.system = orig_system
+            assert.is_true(ok, tostring(err))
+            assert.is_table(captured_argv)
+            local projs = {}
+            for i, a in ipairs(captured_argv) do
+                if a == "--project" then
+                    projs[#projs + 1] = captured_argv[i + 1]
+                end
+            end
+            -- active project present exactly once, plus the unique extra
+            local saw_active, saw_other, dupes = 0, 0, 0
+            for _, p in ipairs(projs) do
+                if p:lower():find("active%.vcxproj$") then
+                    saw_active = saw_active + 1
+                elseif p:lower():find("other%.vcxproj$") then
+                    saw_other = saw_other + 1
+                end
+            end
+            assert.equals(1, saw_active)
+            assert.equals(1, saw_other)
+            for _, p in ipairs(projs) do
+                assert.is_truthy(p:lower():match("%.vcxproj$"))
+            end
+            for _ = 1, dupes do
             end
         end
-        assert.equals(1, saw_active)
-        assert.equals(1, saw_other)
-        for _, p in ipairs(projs) do
-            assert.is_truthy(p:lower():match("%.vcxproj$"))
-        end
-        for _ = 1, dupes do end
-    end)
+    )
 
     it("config rejects unknown keys and bad types", function()
         local Config = require("msvc.config")
@@ -233,31 +247,34 @@ describe("msvc.compile_commands", function()
             vim.fn.delete(tmp_root, "rf")
         end)
 
-        it("resolve_anchor prefers solution dir, then project dir, then cwd", function()
-            local CC = require("msvc.compile_commands")
-            local sol_dir = Util.join_path(tmp_root, "sol")
-            local proj_dir = Util.join_path(tmp_root, "proj")
-            setup_dirs(tmp_root, { "sol", "proj" })
-            assert.equals(
-                Util.normalize_path(sol_dir),
-                CC._internal.resolve_anchor(
-                    Util.join_path(sol_dir, "app.sln"),
-                    Util.join_path(proj_dir, "p.vcxproj")
+        it(
+            "resolve_anchor prefers solution dir, then project dir, then cwd",
+            function()
+                local CC = require("msvc.compile_commands")
+                local sol_dir = Util.join_path(tmp_root, "sol")
+                local proj_dir = Util.join_path(tmp_root, "proj")
+                setup_dirs(tmp_root, { "sol", "proj" })
+                assert.equals(
+                    Util.normalize_path(sol_dir),
+                    CC._internal.resolve_anchor(
+                        Util.join_path(sol_dir, "app.sln"),
+                        Util.join_path(proj_dir, "p.vcxproj")
+                    )
                 )
-            )
-            assert.equals(
-                Util.normalize_path(proj_dir),
-                CC._internal.resolve_anchor(
-                    nil,
-                    Util.join_path(proj_dir, "p.vcxproj")
+                assert.equals(
+                    Util.normalize_path(proj_dir),
+                    CC._internal.resolve_anchor(
+                        nil,
+                        Util.join_path(proj_dir, "p.vcxproj")
+                    )
                 )
-            )
-            vim.cmd("cd " .. vim.fn.fnameescape(tmp_root))
-            assert.equals(
-                Util.normalize_path(tmp_root),
-                CC._internal.resolve_anchor(nil, nil)
-            )
-        end)
+                vim.cmd("cd " .. vim.fn.fnameescape(tmp_root))
+                assert.equals(
+                    Util.normalize_path(tmp_root),
+                    CC._internal.resolve_anchor(nil, nil)
+                )
+            end
+        )
 
         it("relative outdir resolves against solution dir", function()
             local CC = require("msvc.compile_commands")
@@ -274,31 +291,37 @@ describe("msvc.compile_commands", function()
             )
         end)
 
-        it("relative outdir falls back to project dir when no solution", function()
-            local CC = require("msvc.compile_commands")
-            local proj_dir = Util.join_path(tmp_root, "proj")
-            setup_dirs(tmp_root, { "proj/out" })
-            local out = CC._internal.resolve_outpath(
-                "out",
-                nil,
-                Util.join_path(proj_dir, "p.vcxproj")
-            )
-            assert.equals(
-                Util.join_path(proj_dir, "out", "compile_commands.json"),
-                out
-            )
-        end)
+        it(
+            "relative outdir falls back to project dir when no solution",
+            function()
+                local CC = require("msvc.compile_commands")
+                local proj_dir = Util.join_path(tmp_root, "proj")
+                setup_dirs(tmp_root, { "proj/out" })
+                local out = CC._internal.resolve_outpath(
+                    "out",
+                    nil,
+                    Util.join_path(proj_dir, "p.vcxproj")
+                )
+                assert.equals(
+                    Util.join_path(proj_dir, "out", "compile_commands.json"),
+                    out
+                )
+            end
+        )
 
-        it("relative outdir falls back to cwd when no solution / project", function()
-            local CC = require("msvc.compile_commands")
-            setup_dirs(tmp_root, { "cwdout" })
-            vim.cmd("cd " .. vim.fn.fnameescape(tmp_root))
-            local out = CC._internal.resolve_outpath("cwdout", nil, nil)
-            assert.equals(
-                Util.join_path(tmp_root, "cwdout", "compile_commands.json"),
-                out
-            )
-        end)
+        it(
+            "relative outdir falls back to cwd when no solution / project",
+            function()
+                local CC = require("msvc.compile_commands")
+                setup_dirs(tmp_root, { "cwdout" })
+                vim.cmd("cd " .. vim.fn.fnameescape(tmp_root))
+                local out = CC._internal.resolve_outpath("cwdout", nil, nil)
+                assert.equals(
+                    Util.join_path(tmp_root, "cwdout", "compile_commands.json"),
+                    out
+                )
+            end
+        )
 
         it("absolute outdir passes through unchanged", function()
             local CC = require("msvc.compile_commands")
@@ -312,10 +335,7 @@ describe("msvc.compile_commands", function()
                 Util.join_path(other, "app.sln"),
                 nil
             )
-            assert.equals(
-                Util.join_path(abs, "compile_commands.json"),
-                out
-            )
+            assert.equals(Util.join_path(abs, "compile_commands.json"), out)
         end)
 
         it("relative builddir resolves against solution dir", function()

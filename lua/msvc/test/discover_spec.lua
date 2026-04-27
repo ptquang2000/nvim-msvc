@@ -57,24 +57,19 @@ describe("msvc.discover.find_vcxprojs", function()
         rmrf(dir)
     end)
 
-    it(
-        "respects filter_meta_targets=false to return everything",
-        function()
-            local Discover = require("msvc.discover")
-            local Util = require("msvc.util")
-            local dir = mktempdir()
-            touch(Util.join_path(dir, "mylib.vcxproj"))
-            touch(Util.join_path(dir, "ALL_BUILD.vcxproj"))
+    it("respects filter_meta_targets=false to return everything", function()
+        local Discover = require("msvc.discover")
+        local Util = require("msvc.util")
+        local dir = mktempdir()
+        touch(Util.join_path(dir, "mylib.vcxproj"))
+        touch(Util.join_path(dir, "ALL_BUILD.vcxproj"))
 
-            local found = Discover.find_vcxprojs(
-                dir,
-                { filter_meta_targets = false }
-            )
-            assert.are.equal(2, #found)
+        local found =
+            Discover.find_vcxprojs(dir, { filter_meta_targets = false })
+        assert.are.equal(2, #found)
 
-            rmrf(dir)
-        end
-    )
+        rmrf(dir)
+    end)
 
     it("exposes CMAKE_META_TARGETS as a public constant", function()
         local Discover = require("msvc.discover")
