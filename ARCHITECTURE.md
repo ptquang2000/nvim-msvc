@@ -49,7 +49,7 @@ plugin/msvc.lua              Loads the plugin on Neovim startup
     ├── compile_commands.lua Wraps msbuild-extractor-sample for compile_commands.json
     ├── devenv.lua           vcvarsall / VsDevCmd resolution + env caching
     ├── discover.lua         .sln / .vcxproj walk-up discovery
-    ├── vswhere.lua          vswhere.exe wrapper, install_path lookup
+    ├── vswhere.lua          vswhere.exe wrapper, install lookup, async warm
     ├── quickfix.lua         MSBuild / cl.exe / link.exe efm + parse_lines
     └── util.lua             Path, table, string, shell-quote helpers
 ```
@@ -79,10 +79,18 @@ and dev-env keys). Public functions:
   lines for verbose `:Msvc profile` / `status` output.
 
 ### `state.lua` — `MsvcState`
-A small wrapper around five fields: `solution`, `project`, `profile`,
-`install_path`, `arch`. Mutators emit `STATE_CHANGED` on the bus;
-unknown fields raise on assignment via `ALLOWED_FIELDS`. `get_snapshot()`
-returns a flat snapshot for `:Msvc status`.
+A small wrapper around eight fields: `solution`, `project`, `profile`,
+`install_path`, `install_display_name`, `install_version`,
+`install_product_line_version`, `arch`. **`install_path` is a runtime
+state cache only** — it is populated automatically by the async
+`vswhere` warm and is no longer a user-facing config field. The three
+`install_*` companions (`install_display_name`, `install_version`,
+`install_product_line_version`) are an atomic write group: every site
+that writes `install_path` writes them too, every site that clears
+`install_path` clears them. They are consumed only by `:Msvc status`
+to render the friendly install line. Mutators emit `STATE_CHANGED` on
+the bus; unknown fields raise on assignment via `ALLOWED_FIELDS`.
+`get_snapshot()` returns a flat snapshot for `:Msvc status`.
 
 ### `commands.lua` — dispatcher
 The user-facing surface. Each entry in `subcommands` is
@@ -123,10 +131,47 @@ of the solution file.
 ### `vswhere.lua` — VS install lookup
 Wraps `vswhere.exe`. Filters by `vs_version`, `vs_prerelease`,
 `vs_products`, `vs_requires` (from the merged profile view) and
-returns an `installationPath`. Falls back to
+returns an `installationPath`. User-facing `vs_version` shorthands
+(`"2017"`, `"17"`, …) are translated to vswhere's range syntax via
+`translate_version` before being passed to the executable — vswhere
+itself does NOT understand the marketing-year tokens. Falls back to
 `%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe`
 when no explicit `vswhere_path` is configured. Called asynchronously
-during `setup()` to warm `state.install_path`.
+during `setup()` as **two independent parallel calls**:
+
+  1. **Unfiltered warm** — passes no `vs_version` / `vs_products` /
+     `vs_requires` and forces `vs_prerelease=true` /
+     `include_packages=true`. Drives the `vs_completion_candidates`
+     table on the singleton, so `:Msvc update <vs_*> <Tab>` lists
+     every install on the machine regardless of the active profile
+     filters (the original "menu shrinks after selection" bug).
+  2. **Filtered resolve** — uses the active profile filters and
+     populates `state.install_path` plus the friendly metadata
+     (`install_display_name`, `install_version`,
+     `install_product_line_version`). Skipped when `install_path` is
+     already cached.
+
+The two calls write to disjoint state targets and fail independently —
+a failing unfiltered warm leaves completion candidates empty (the
+static fallback in `commands.lua` covers the gap); a failing filtered
+resolve leaves `install_path` nil. The `vs_version` candidate list is
+strict: `"latest"`, every install's full `installationVersion`, and
+the canonical major-range string `"[N.0,(N+1).0)"` per unique major.
+Marketing-year and bare-major shorthands are deliberately not
+suggested — they remain valid freehand input via `translate_version`.
+
+The project-scan-derived `project_targets` cache that feeds
+`configuration` / `platform` completion runs in parallel as a third
+warm.
+
+When the user runs `:Msvc update vs_version <X>` (or any `vs_*` /
+`vswhere_path` field), the override is written through
+`profile_overrides[name]` AND `state.install_path` is invalidated and
+re-resolved synchronously (via `Msvc:_resolve_install_path_sync`) so
+the immediate `:Msvc status` reflects the new selection. The async
+warm is also re-kicked to refresh the completion candidates. If no
+install matches, `state.install_path` stays nil and a `Log:warn` names
+the offending `vs_version`.
 
 ### `quickfix.lua` — error parsing
 Defines the MSBuild / `cl.exe` / `link.exe` `errorformat` string and
@@ -213,9 +258,14 @@ status logged, qf opened on failure
   one (`Msvc:cancel_build`) before spawning. There is no build queue.
 - **`setup()` is idempotent.** Calling it multiple times re-merges the
   config layer, re-clears the augroup, and re-installs autocmds. It
-  also kicks off an async vswhere lookup that warms
-  `state.install_path` in the background — `setup()` returns
-  immediately and the path is filled in before the first build.
+  also kicks off two parallel `vswhere` warms (an unfiltered warm
+  populating the `vs_*` completion candidate lists, and a filtered
+  resolve populating `state.install_path` plus the friendly metadata
+  `install_display_name` / `install_version` /
+  `install_product_line_version`) and a project scan (populates the
+  `configuration` / `platform` candidate lists from the active
+  solution's `.sln` + `.vcxproj` files). `setup()` returns
+  immediately; all warms fill in before the first build.
 - **No coroutines.** All asynchrony goes through `vim.system()` or
   `vim.uv` callbacks. There is intentionally no `vim.loop`-driven
   event loop and no plenary `co.wrap`.

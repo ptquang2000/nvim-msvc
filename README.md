@@ -22,7 +22,7 @@ streaming, solution / project discovery, and cancellable jobs.
 
 ```lua
 {
-    "quangphan/nvim-msvc",
+    "ptquang2000/nvim-msvc",
     cond = function() return vim.fn.has("win32") == 1 end,
     ft = { "c", "cpp", "cs" },
     cmd = "Msvc",
@@ -108,7 +108,28 @@ require("msvc").setup({
     -- `:Msvc profile <name>`.
     profiles = {
         base = {
-            vs_version       = "latest",           -- vswhere -version filter ("latest"|"16"|"17"|...)
+            vs_version       = "latest",           -- vswhere -version filter; see notes below
+            -- Tab-completion suggests only canonical vswhere inputs:
+            --   "latest", each install's full installationVersion
+            --   ("17.14.37216.2"), and major-range syntax ("[17.0,18.0)").
+            -- Marketing-year ("2017"/"2022") and bare-major ("15"/"17")
+            -- shorthands are still accepted as freehand input — they are
+            -- translated by `vswhere.translate_version` before being
+            -- passed to vswhere.exe — they are simply not surfaced in
+            -- the completion menu.
+            -- Accepted values:
+            --   "latest" / "any" / nil  → no -version filter
+            --   "2015"/"2017"/"2019"/"2022" → expanded to that VS year only
+            --                                 (e.g. "2017" → "[15.0,16.0)")
+            --   "14"/"15"/"16"/"17"/"18"    → expanded to that exact major
+            --                                 (e.g. "17" → "[17.0,18.0)" — VS 2022 ONLY,
+            --                                  NOT vswhere's >=17 default)
+            --   full semver ("17.8.34330.188") → wrapped as closed-closed exact-match
+            --                                    range ("[17.8.34330.188,17.8.34330.188]")
+            --                                    so vswhere pins to that exact install
+            --                                    (raw `-version X.Y.Z` would mean `>= X.Y.Z`
+            --                                    and silently pick a newer install).
+            --   range ("[17.0,18.0)") → passed through verbatim
             vs_prerelease    = false,              -- include preview channel installs
             vs_products = {                        -- vswhere -products filter
                 "Microsoft.VisualStudio.Product.Community",
@@ -166,11 +187,30 @@ sources the dev env from the active profile:
 `profiles`. On the first `setup()` call, that profile is activated
 automatically — no explicit `:Msvc profile` is needed to get going.
 Other named profiles layer on top of it during build resolution.
-`setup()` also kicks off an asynchronous `vswhere` lookup to populate
-`state.install_path` in the background — `setup()` returns immediately
-and the path is filled in by the time you trigger a build.
-A configured `install_path` on the root profile (or the active named
-profile) short-circuits the lookup.
+`setup()` also kicks off two asynchronous warms in the background — `setup()`
+returns immediately and they fill in before you trigger a build:
+
+1. **`vswhere`** — kicked off as **two independent async calls** that run
+   in parallel and never block each other:
+   * **Unfiltered warm** (no `vs_version` / `vs_products` /
+     `vs_requires`, `prerelease=true`) feeds the
+     `vs_completion_candidates` table that drives `:Msvc update <vs_*>
+     <Tab>`. The menu therefore lists every install on the machine —
+     it never shrinks after `:Msvc update vs_version <X>` selects one.
+   * **Filtered resolve** (active profile filters) populates
+     `state.install_path` plus the friendly metadata
+     (`install_display_name`, `install_version`,
+     `install_product_line_version`) consumed by `:Msvc status`.
+2. **Project scan** — parses the active `.sln` plus its referenced
+   `.vcxproj` files (or, when no solution is pinned, a depth-2 walk of
+   cwd) for `Configuration|Platform` tuples, populating the dynamic
+   `configuration` / `platform` completion lists.
+
+> **Migration note (vNEXT):** the `install_path` profile field has been
+> removed. Set `vs_version` (e.g. `"17"` / `"2022"` / `"latest"`) and/or
+> `vswhere_path` instead. Existing configs that still set
+> `profiles.<x>.install_path` log a one-line deprecation warning at
+> setup time and ignore the value.
 
 Merging uses `vim.tbl_extend("force", ...)` — **never recursive**, so array values
 (`vs_products`, `msbuild_args`, …) are replaced wholesale.
@@ -190,14 +230,21 @@ All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
 - `:Msvc cancel` — Cancel the in-flight MSBuild invocation
   (`taskkill /T /F /PID …`).
 - `:Msvc status` — Echo solution / project / install snapshot plus the
-  active profile's full field listing.
+  active profile's full field listing. The install line shows the
+  friendly version when known:
+  ```
+  install  = Visual Studio Professional 2022 (17.14.37216.2)
+  path     = C:\Program Files\Microsoft Visual Studio\2022\Professional
+  ```
+  When no install metadata is cached the line falls back to the bare
+  path (`install  = C:\…`) or `install  = <none>`.
 - `:Msvc log` — Open the build log: live tail while a build is running,
   otherwise the most recent build's captured output.
 - `:Msvc profile <name>` — Set (or show) the active named profile from
   `config.profiles`. A profile holds both MSBuild settings
   (`configuration`, `platform`, `target`, `msbuild_args`, `jobs`, ...)
   and dev-env parameters (`arch`, `host_arch`, `vcvars_ver`, `winsdk`,
-  `vcvars_spectre_libs`, `vs_*`, `vswhere_path`, `install_path`) on the
+  `vcvars_spectre_libs`, `vs_*`, `vswhere_path`) on the
   same flat table. Setting a profile logs the full merged field set,
   sorted, one `key = value` per line; showing it without an argument
   does the same for the active profile.
@@ -207,17 +254,28 @@ All commands are dispatched through a single `:Msvc <subcommand>` (modeled on
   `jobs`, `max_cpu_count`, `no_logo`, `extra_args`, `arch`, `host_arch`,
   `vcvars_ver`, `winsdk`, `vcvars_spectre_libs`, `vs_version`,
   `vs_prerelease`, `vs_products`, `vs_requires`, `vswhere_path`.
-  `install_path` is a global runtime state value (no profile selection
-  required) and is updated directly on the active state. Booleans
+  Booleans
   accept `true`/`false`/`1`/`0`/`yes`/`no`. Tables accept comma-separated
-  values. Both arguments are tab-completed — property names plus known
-  enums for string props, with dynamic enumeration for `vcvars_ver`
-  (scans `<install_path>\VC\Tools\MSVC`) and `winsdk` (queries
-  `HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots`, with a
-  filesystem fallback). `vcvars_spectre_libs` completes to `spectre`,
+  values. Both arguments are tab-completed — property names plus
+  candidate values from a layered selection chain:
+    1. **Async-warmed dynamic source.** `vs_version` / `vs_products` /
+       `vs_requires` come from the `vswhere` results captured at
+       setup; `configuration` / `platform` come from the parsed
+       `.sln` / `.vcxproj` set.
+    2. **Static fallback.** A small, well-known list (e.g. `Debug` /
+       `Release`, `Win32` / `x64`, `latest`) used while the async
+       warms are still in flight or when no project is pinned —
+       completion never returns empty for a known property.
+    3. **Registry / filesystem providers.** `vcvars_ver` (scans
+       `<install_path>\VC\Tools\MSVC`) and `winsdk` (queries
+       `HKLM\SOFTWARE\Microsoft\Windows Kits\Installed Roots`,
+       with a filesystem fallback).
+  `vcvars_spectre_libs` completes to `spectre`,
   `spectre_load`, `spectre_load_cf`. Overrides are **transient** — they
   live on top of the configured baseline and are cleared whenever the
   profile is re-selected via `:Msvc profile`.
+  Passing `install_path` is rejected with a deprecation warning — set
+  `vs_version` / `vswhere_path` instead.
 - `:Msvc project [name]` — Pin a single project (subset of the loaded
   solution) so subsequent builds target only that `.vcxproj`. Tab
   completion lists the project names parsed from the active `.sln`
