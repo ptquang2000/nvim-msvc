@@ -445,7 +445,14 @@ local function do_setup(self, user_config)
             if not dir or dir == "" then
                 return
             end
-            local new_cands = Discover.scan_slns_in_dir(dir)
+            local matches = vim.fn.glob(Util.join_path(dir, "*.sln"), true, true)
+            local new_cands = {}
+            for _, p in ipairs(type(matches) == "table" and matches or {}) do
+                local norm = Util.normalize_path(p)
+                if norm and Util.is_file(norm) then
+                    new_cands[#new_cands + 1] = norm
+                end
+            end
             local changed = false
             for _, c in ipairs(new_cands) do
                 local lower = c:lower()
