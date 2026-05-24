@@ -445,13 +445,16 @@ local function do_setup(self, user_config)
             if not dir or dir == "" then
                 return
             end
-            local matches = vim.fn.glob(Util.join_path(dir, "*.sln"), true, true)
+            local raw = vim.fn.globpath(dir, "*.sln", true, true)
             local new_cands = {}
-            for _, p in ipairs(type(matches) == "table" and matches or {}) do
+            for _, p in ipairs(type(raw) == "table" and raw or {}) do
                 local norm = Util.normalize_path(p)
                 if norm and Util.is_file(norm) then
                     new_cands[#new_cands + 1] = norm
                 end
+            end
+            if #new_cands == 0 then
+                return
             end
             local changed = false
             for _, c in ipairs(new_cands) do
@@ -474,6 +477,15 @@ local function do_setup(self, user_config)
                     "msvc: candidates updated (%d total)",
                     #self.solution_candidates
                 )
+            end
+            if #new_cands == 1 and not self.solution then
+                if self:set_solution(new_cands[1]) then
+                    Log:info(
+                        "msvc: solution = %s (%d projects)",
+                        self.solution,
+                        #self.solution_projects
+                    )
+                end
             end
         end,
     })
