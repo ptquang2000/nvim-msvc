@@ -76,6 +76,16 @@ MSBuild and so the compiler / linker can find `INCLUDE` / `LIB` /
 never name-based). `/nr:false` is always passed to MSBuild itself so
 worker nodes do not survive parent termination.
 
+## Solution auto-selection
+
+When a `.sln` file is entered as a buffer (`BufEnter *.sln`), the plugin:
+
+1. Adds the file to `solution_candidates` if it is not already present (deduped, sorted).
+2. Calls `set_solution()` to make it the active solution unconditionally — even if another solution was already selected.
+3. Clears the pinned project and refreshes `solution_projects`.
+
+This mirrors git-fugitive's per-buffer context detection: browsing to a `.sln` in netrw or opening it directly is enough to switch context. Discovery via `:Msvc discover` or `setup()` is still the source of truth for bulk candidate population; `BufEnter` only appends.
+
 ## Auto-completion sources
 
 - `configuration` / `platform` — parsed from the active `.sln`'s

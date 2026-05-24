@@ -364,8 +364,78 @@ local function do_setup(self, user_config)
 
     self:discover_solution()
 
+    local group = vim.api.nvim_create_augroup("Msvc", { clear = true })
+
+    -- Auto-select a .sln when its buffer is entered, and add it to candidates.
+    vim.api.nvim_create_autocmd("BufEnter", {
+        group = group,
+        pattern = "*.sln",
+        callback = function()
+            local path = Util.normalize_path(vim.api.nvim_buf_get_name(0))
+            if not path or path == "" or not Util.is_file(path) then
+                return
+            end
+            local lower = path:lower()
+            local found = false
+            for _, c in ipairs(self.solution_candidates) do
+                if c:lower() == lower then
+                    found = true
+                    break
+                end
+            end
+            if not found then
+                self.solution_candidates[#self.solution_candidates + 1] = path
+                table.sort(self.solution_candidates)
+            end
+            if self:set_solution(path) then
+                Log:info(
+                    "msvc: solution = %s (%d projects)",
+                    self.solution,
+                    #self.solution_projects
+                )
+            end
+        end,
+    })
+
+    -- Refresh candidates when navigating in a directory explorer (netrw, etc.).
+    vim.api.nvim_create_autocmd("BufEnter", {
+        group = group,
+        callback = function()
+            local bufname = vim.api.nvim_buf_get_name(0)
+            if vim.fn.isdirectory(bufname) ~= 1 then
+                return
+            end
+            local dir = Util.normalize_path(bufname)
+            if not dir or dir == "" then
+                return
+            end
+            local new_cands = Discover.scan_slns_in_dir(dir)
+            local changed = false
+            for _, c in ipairs(new_cands) do
+                local lower = c:lower()
+                local exists = false
+                for _, existing in ipairs(self.solution_candidates) do
+                    if existing:lower() == lower then
+                        exists = true
+                        break
+                    end
+                end
+                if not exists then
+                    self.solution_candidates[#self.solution_candidates + 1] = c
+                    changed = true
+                end
+            end
+            if changed then
+                table.sort(self.solution_candidates)
+                Log:debug(
+                    "msvc: candidates updated (%d total)",
+                    #self.solution_candidates
+                )
+            end
+        end,
+    })
+
     if self.config.settings.build_on_save then
-        local group = vim.api.nvim_create_augroup("Msvc", { clear = true })
         vim.api.nvim_create_autocmd("BufWritePost", {
             group = group,
             pattern = { "*.c", "*.cpp", "*.h", "*.hpp", "*.cxx", "*.cc" },

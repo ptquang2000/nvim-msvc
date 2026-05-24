@@ -108,7 +108,7 @@ local function build_dir_set(start_dir, dirs)
     return out
 end
 
-local function scan_slns_in_dir(dir)
+function M.scan_slns_in_dir(dir)
     local matches = vim.fn.globpath(dir, "**/*.sln", true, true)
     if type(matches) ~= "table" then
         return {}
@@ -181,7 +181,7 @@ function M.find_solutions(start_dir, opts)
     end
 
     for _, dir in ipairs(extra_dirs) do
-        for _, abs in ipairs(scan_slns_in_dir(dir)) do
+        for _, abs in ipairs(M.scan_slns_in_dir(dir)) do
             add(abs)
         end
     end
