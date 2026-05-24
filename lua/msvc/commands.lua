@@ -201,7 +201,7 @@ SUBCOMMANDS.project = {
         end
     end,
     complete = function(msvc, _arglead)
-        local out = {}
+        local out = { "-" }
         for _, entry in ipairs(msvc.solution_projects or {}) do
             out[#out + 1] = entry.name
         end

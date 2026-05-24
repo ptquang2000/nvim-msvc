@@ -32,10 +32,11 @@ The plugin keeps **one** runtime object — the `Msvc` singleton:
 | `solution`            | Active `.sln` (auto-selected from candidates or via `:Msvc solution`) |
 | `solution_candidates` | All `.sln` files discovered in the repo                           |
 | `project`             | Optional pinned `.vcxproj`                                        |
-| `profile_name`        | Active profile name                                               |
+| `profile_name`        | Active profile name (scoped to the current context key)           |
 | `install`             | Last vswhere installation record (with `installationPath`, etc.)  |
-| `overrides`           | Per-session profile-field overrides set via `:Msvc update`        |
+| `overrides`           | Profile-field overrides for the current context key, set via `:Msvc update` |
 | `solution_projects`   | `{ name, path }` parsed from the active `.sln`                    |
+| `_context_store`      | In-memory map of `(solution, project)` → `{ profile_name, overrides }` |
 
 ## Build lifecycle
 
@@ -75,6 +76,12 @@ MSBuild and so the compiler / linker can find `INCLUDE` / `LIB` /
 `taskkill /T /F /PID <msbuild_pid>` (per environment policy: PID-based,
 never name-based). `/nr:false` is always passed to MSBuild itself so
 worker nodes do not survive parent termination.
+
+## Context keys
+
+The pair `(solution, project)` — where either may be `nil` — forms a **context key**. Every call to `set_solution()` or `set_project()` (including `BufEnter *.sln` auto-selection) saves `{ profile_name, overrides }` for the outgoing key and restores the stored state for the incoming key. A key that has never been seen initialises from `settings.default_profile` with empty overrides.
+
+Calling `:Msvc profile <name>` or `:Msvc update <field> <value>` mutates the live `profile_name` / `overrides` directly; that state is persisted to `_context_store` automatically on the next key transition. Context state is in-memory only and does not survive Neovim restarts.
 
 ## Solution auto-selection
 

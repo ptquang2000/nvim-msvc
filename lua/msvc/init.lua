@@ -31,10 +31,36 @@ local Msvc = {
     solution_projects = {},
     solution_candidates = {},
     _setup_called = false,
+    _context_store = {},
 }
 
 local function log_warn(...)
     Log:warn(...)
+end
+
+local function make_context_key(solution, project)
+    return (solution or "") .. "\0" .. (project or "")
+end
+
+function Msvc:_save_context()
+    local key = make_context_key(self.solution, self.project)
+    self._context_store[key] = {
+        profile_name = self.profile_name,
+        overrides = vim.deepcopy(self.overrides),
+    }
+end
+
+function Msvc:_load_context(solution, project)
+    local key = make_context_key(solution, project)
+    local stored = self._context_store[key]
+    if stored then
+        self.profile_name = stored.profile_name
+        self.overrides = vim.deepcopy(stored.overrides)
+    else
+        self.profile_name = self.config.settings.default_profile
+        self.overrides = {}
+    end
+    self.install = nil
 end
 
 --- Return the active profile merged with any session-overrides.
@@ -161,23 +187,29 @@ end
 --- (matching one of `solution_projects`) or a filesystem path. Pass nil
 --- or "" to clear.
 function Msvc:set_project(path)
+    local new_project
     if path == nil or path == "" then
-        self.project = nil
-        return true
-    end
-    -- Try to match a name from the active solution first.
-    for _, entry in ipairs(self.solution_projects or {}) do
-        if entry.name == path then
-            self.project = entry.path
-            return true
+        new_project = nil
+    else
+        for _, entry in ipairs(self.solution_projects or {}) do
+            if entry.name == path then
+                new_project = entry.path
+                break
+            end
+        end
+        if not new_project then
+            local norm = Util.normalize_path(path)
+            if not Util.is_file(norm) then
+                Log:error("msvc: project not found: %s", tostring(path))
+                return false
+            end
+            new_project = norm
         end
     end
-    local norm = Util.normalize_path(path)
-    if not Util.is_file(norm) then
-        Log:error("msvc: project not found: %s", tostring(path))
-        return false
-    end
-    self.project = norm
+
+    self:_save_context()
+    self.project = new_project
+    self:_load_context(self.solution, new_project)
     return true
 end
 
@@ -187,38 +219,42 @@ end
 --- the previous solution) and refreshes `solution_projects` so the
 --- `:Msvc project` completion list reflects the new sln.
 function Msvc:set_solution(path)
+    local new_solution
     if path == nil or path == "" then
-        self.solution = nil
-        self.solution_projects = {}
-        self.project = nil
-        return true
-    end
-    local cands = self.solution_candidates or {}
-    -- Match against full path or basename within the candidate set.
-    for _, cand in ipairs(cands) do
-        if cand == path or cand:lower() == tostring(path):lower() then
-            self.solution = cand
-            self.solution_projects = Discover.parse_solution_projects(cand)
-            self.project = nil
-            return true
+        new_solution = nil
+    else
+        local cands = self.solution_candidates or {}
+        for _, cand in ipairs(cands) do
+            if cand == path or cand:lower() == tostring(path):lower() then
+                new_solution = cand
+                break
+            end
+        end
+        if not new_solution then
+            for _, cand in ipairs(cands) do
+                if Util.basename(cand) == path then
+                    new_solution = cand
+                    break
+                end
+            end
+        end
+        if not new_solution then
+            local norm = Util.normalize_path(path)
+            if not norm or not Util.is_file(norm) then
+                Log:error("msvc: solution not found: %s", tostring(path))
+                return false
+            end
+            new_solution = norm
         end
     end
-    for _, cand in ipairs(cands) do
-        if Util.basename(cand) == path then
-            self.solution = cand
-            self.solution_projects = Discover.parse_solution_projects(cand)
-            self.project = nil
-            return true
-        end
-    end
-    local norm = Util.normalize_path(path)
-    if not norm or not Util.is_file(norm) then
-        Log:error("msvc: solution not found: %s", tostring(path))
-        return false
-    end
-    self.solution = norm
-    self.solution_projects = Discover.parse_solution_projects(norm)
+
+    self:_save_context()
+    self.solution = new_solution
+    self.solution_projects = new_solution
+            and Discover.parse_solution_projects(new_solution)
+        or {}
     self.project = nil
+    self:_load_context(new_solution, nil)
     return true
 end
 
