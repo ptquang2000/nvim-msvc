@@ -83,4 +83,31 @@ describe("msvc.discover", function()
         assert.is_true(has(r.platforms, "Win32"))
     end)
 
+    it("discover_targets parses platforms with spaces (Any CPU)", function()
+        local sln = Util.join_path(tmpdir, "S.sln")
+        write(
+            sln,
+            table.concat({
+                "Global",
+                "\tGlobalSection(SolutionConfigurationPlatforms) = preSolution",
+                "\t\tDebug|Any CPU = Debug|Any CPU",
+                "\t\tRelease|Any CPU = Release|Any CPU",
+                "\tEndGlobalSection",
+                "EndGlobal",
+            }, "\r\n")
+        )
+        local r = Discover.discover_targets(sln, nil)
+        local has = function(t, v)
+            for _, x in ipairs(t) do
+                if x == v then
+                    return true
+                end
+            end
+            return false
+        end
+        assert.is_true(has(r.configurations, "Debug"))
+        assert.is_true(has(r.configurations, "Release"))
+        assert.is_true(has(r.platforms, "Any CPU"))
+    end)
+
 end)

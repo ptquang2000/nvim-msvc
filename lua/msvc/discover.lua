@@ -113,13 +113,17 @@ local function parse_sln(sln_path)
         "GlobalSection%(SolutionConfigurationPlatforms%).-EndGlobalSection"
     )
     if section then
-        for cfg, plat in section:gmatch("([^=%s|]+)|([^=%s]+)%s*=") do
-            cfg, plat = cfg:gsub("%s+", ""), plat:gsub("%s+", "")
-            if cfg ~= "" and not CMAKE_META_TARGETS[cfg] then
-                cfgs[#cfgs + 1] = cfg
-            end
-            if plat ~= "" then
-                plats[#plats + 1] = plat
+        for line in section:gmatch("[^\n]+") do
+            local cfg, plat = line:match("^%s*([^|]+)|([^=]+)%s*=")
+            if cfg and plat then
+                cfg = cfg:match("^%s*(.-)%s*$")
+                plat = plat:match("^%s*(.-)%s*$")
+                if cfg ~= "" and not CMAKE_META_TARGETS[cfg] then
+                    cfgs[#cfgs + 1] = cfg
+                end
+                if plat ~= "" then
+                    plats[#plats + 1] = plat
+                end
             end
         end
     end
