@@ -110,7 +110,7 @@ local function check_state(msvc)
     elseif msvc.solution then
         err("solution path no longer exists: " .. msvc.solution)
     else
-        warn("no .sln pinned", { "`:cd` near a .sln, then `:Msvc discover`." })
+        warn("no .sln pinned", { "Open a .sln buffer or use `:Msvc solution <path>`." })
     end
     if msvc.project then
         if Util.is_file(msvc.project) then

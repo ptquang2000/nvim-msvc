@@ -57,10 +57,118 @@ SUBCOMMANDS.status = {
     end,
 }
 
+local function split_context_key(k)
+    local sep = k:find("\0", 1, true)
+    if not sep then
+        return nil, nil
+    end
+    return k:sub(1, sep - 1), k:sub(sep + 1)
+end
+
+local function context_key_label(msvc, k)
+    local store = msvc._context_store or {}
+    local sln, proj = split_context_key(k)
+    if not sln or sln == "" then
+        return nil
+    end
+
+    local stored = store[k]
+    local prof
+    if stored then
+        prof = Config.get_profile(msvc.config, stored.profile_name)
+        if prof then
+            prof = vim.deepcopy(prof)
+            for fk, fv in pairs(stored.overrides or {}) do
+                prof[fk] = fv
+            end
+        end
+    else
+        prof = msvc:active_profile()
+    end
+    local config_str = ""
+    if prof and (prof.configuration or prof.platform) then
+        config_str = " | " .. (prof.configuration or "?") .. "|" .. (prof.platform or "?")
+    end
+
+    local sln_base = Util.basename(sln)
+    if not proj or proj == "" then
+        return sln_base .. config_str
+    end
+    local proj_name = Util.basename(proj)
+    for _, entry in ipairs(msvc.solution_projects or {}) do
+        if entry.path:lower() == proj:lower() then
+            proj_name = entry.name
+            break
+        end
+    end
+    return sln_base .. " | " .. proj_name .. config_str
+end
+
+local function collect_context_keys(msvc)
+    local current_key = (msvc.solution or "") .. "\0" .. (msvc.project or "")
+    local store = msvc._context_store or {}
+    local ordered = {}
+    local seen = {}
+    local function add(k)
+        if k and not seen[k] then
+            seen[k] = true
+            ordered[#ordered + 1] = k
+        end
+    end
+    if not store[current_key] and msvc.solution then
+        add(current_key)
+    end
+    if msvc._last_build_key then
+        add(msvc._last_build_key)
+    end
+    for k, _ in pairs(store) do
+        add(k)
+    end
+    return ordered
+end
+
+local function build_context_completions(msvc)
+    local out = {}
+    for _, k in ipairs(collect_context_keys(msvc)) do
+        local label = context_key_label(msvc, k)
+        if label then
+            out[#out + 1] = label
+        end
+    end
+    return out
+end
+
+local function parse_context_label(msvc, label)
+    for _, k in ipairs(collect_context_keys(msvc)) do
+        if context_key_label(msvc, k) == label then
+            local sln, proj = split_context_key(k)
+            return sln ~= "" and sln or nil, proj ~= "" and proj or nil
+        end
+    end
+    Log:error("msvc: no context matches label %q", label)
+    return false
+end
+
 SUBCOMMANDS.build = {
-    desc = "build the active target ([target] = MSBuild /t: argument)",
+    desc = "build the active target (optional: switch context first)",
     run = function(msvc, args)
-        msvc:build(args[1])
+        if #args > 0 then
+            local label = args[1]
+            local sln, proj = parse_context_label(msvc, label)
+            if sln == false then
+                return
+            end
+            if sln ~= msvc.solution then
+                if not msvc:set_solution(sln) then return end
+            end
+            if proj ~= msvc.project then
+                if not msvc:set_project(proj) then return end
+            end
+        end
+        msvc:build()
+    end,
+    complete = function(msvc, _arglead)
+        return build_context_completions(msvc)
     end,
 }
 
@@ -82,32 +190,6 @@ SUBCOMMANDS.cancel = {
     desc = "cancel an in-flight build",
     run = function(msvc)
         msvc:cancel()
-    end,
-}
-
-SUBCOMMANDS.discover = {
-    desc = "re-scan for .sln files (git-tracked, excluding submodules + builddir)",
-    run = function(msvc)
-        local cands = msvc:discover_solution()
-        if msvc.solution then
-            Log:info(
-                "msvc: solution = %s (%d projects, %d candidate%s)",
-                msvc.solution,
-                #msvc.solution_projects,
-                #cands,
-                #cands == 1 and "" or "s"
-            )
-        elseif #cands > 0 then
-            Log:warn(
-                "msvc: %d .sln candidate(s); pick one with `:Msvc solution <path>`",
-                #cands
-            )
-            for _, c in ipairs(cands) do
-                print_lines({ "  " .. c })
-            end
-        else
-            Log:warn("msvc: no .sln found in or above %s", vim.fn.getcwd())
-        end
     end,
 }
 

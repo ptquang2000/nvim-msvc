@@ -13,7 +13,7 @@ lua/msvc/
   build.lua             Spawn MSBuild via vim.system; cancel via taskkill /T /F /PID.
   devenv.lua            Run vcvarsall.bat in cmd.exe; cache the resulting env.
   vswhere.lua           JSON wrapper around vswhere.exe (sync + async).
-  discover.lua          Locate .sln candidates (git ls-files excluding submodules, plus filesystem scan of profile.compile_commands.builddir); parse projects.
+  discover.lua          Parse .sln projects and configuration/platform targets; shallow single-sln startup scan.
   compile_commands.lua  Drive msbuild-extractor-sample after a successful build.
   quickfix.lua          Parse MSBuild output through Vim's errorformat.
   log.lua               vim.notify wrapper + live-tail buffer for build output.
@@ -29,18 +29,19 @@ The plugin keeps **one** runtime object — the `Msvc` singleton:
 | Field                 | Description                                                       |
 |-----------------------|-------------------------------------------------------------------|
 | `config`              | Merged + validated config table                                   |
-| `solution`            | Active `.sln` (auto-selected from candidates or via `:Msvc solution`) |
-| `solution_candidates` | All `.sln` files discovered in the repo                           |
+| `solution`            | Active `.sln` (auto-selected at startup if single in `cwd`, or on `BufEnter *.sln`, or via `:Msvc solution`) |
+| `solution_candidates` | All `.sln` files explicitly opened as buffers in this session     |
 | `project`             | Optional pinned `.vcxproj`                                        |
 | `profile_name`        | Active profile name (scoped to the current context key)           |
 | `install`             | Last vswhere installation record (with `installationPath`, etc.)  |
 | `overrides`           | Profile-field overrides for the current context key, set via `:Msvc update` |
 | `solution_projects`   | `{ name, path }` parsed from the active `.sln`                    |
 | `_context_store`      | In-memory map of `(solution, project)` → `{ profile_name, overrides }` |
+| `_last_build_key`     | Context key of the most recent successful `build()` dispatch; `nil` until first build |
 
 ## Build lifecycle
 
-1. `:Msvc build [target]` → `Msvc:build()`.
+1. `:Msvc build [context-label]` → `Msvc:build()`. If a context label is supplied, the plugin switches to that `(solution, project)` context before building. Tab-completion lists all known context keys (from `_context_store`) with `_last_build_key` first.
 2. Resolve the active profile (named entry shallow-merged over `default`).
 3. `vswhere` → `installationPath` (cached on `Msvc.install`).
 4. `DevEnv.find_msbuild(install)` walks `MSBuild\Current\Bin` then
@@ -83,18 +84,18 @@ The pair `(solution, project)` — where either may be `nil` — forms a **conte
 
 Calling `:Msvc profile <name>` or `:Msvc update <field> <value>` mutates the live `profile_name` / `overrides` directly; that state is persisted to `_context_store` automatically on the next key transition. Context state is in-memory only and does not survive Neovim restarts.
 
-## Solution auto-selection
+## Solution population
 
-When a `.sln` file is entered as a buffer (`BufEnter *.sln`), the plugin:
+Solutions enter `solution_candidates` in exactly two ways — no background scanning, no git traversal:
 
-1. Adds the file to `solution_candidates` if it is not already present (deduped, sorted).
-2. Calls `set_solution()` to make it the active solution unconditionally — even if another solution was already selected.
-3. Clears the pinned project and refreshes `solution_projects`.
+1. **Startup single-sln check** — `setup()` does a shallow `glob(cwd .. "/*.sln")`. If exactly one `.sln` is found, it is added to `solution_candidates` and immediately selected via `set_solution()`.
+2. **`BufEnter *.sln`** — whenever the user opens a `.sln` buffer (directly or via netrw), the path is appended to `solution_candidates` (deduped, sorted) and `set_solution()` is called unconditionally, making it the active solution and clearing any pinned project.
 
-This mirrors git-fugitive's per-buffer context detection: browsing to a `.sln` in netrw or opening it directly is enough to switch context. Discovery via `:Msvc discover` or `setup()` is still the source of truth for bulk candidate population; `BufEnter` only appends.
+No other mechanism populates candidates. If the user opens nvim in a directory with multiple `.sln` files, no solution is pre-selected; they open one directly or use `:Msvc solution <path>`.
 
 ## Auto-completion sources
 
+- `build` (context label) — all `(solution, project)` pairs from `_context_store`, with `_last_build_key` first.
 - `configuration` / `platform` — parsed from the active `.sln`'s
   `GlobalSection(SolutionConfigurationPlatforms)` and from any pinned
   `.vcxproj`.

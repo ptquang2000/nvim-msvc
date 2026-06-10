@@ -81,7 +81,7 @@ shallow-merged in this order: **named profile** → **`default`**.
 :Msvc                       same as :Msvc help
 :Msvc help                  list subcommands
 :Msvc status                show solution/project/profile/install
-:Msvc build [target]        run MSBuild (target overrides the default)
+:Msvc build [context]       run MSBuild (context switches solution/project before building)
 :Msvc rebuild               MSBuild /t:Rebuild
 :Msvc clean                 MSBuild /t:Clean
 :Msvc cancel                kill the in-flight build
@@ -89,7 +89,6 @@ shallow-merged in this order: **named profile** → **`default`**.
 :Msvc solution [path|-]     pick a .sln from discovered candidates ('-' clears)
 :Msvc project [path|-]      pin a .vcxproj as the build target ('-' clears)
 :Msvc update <field> <val>  override a profile field for this session
-:Msvc discover              re-scan repo for .sln files (git-tracked)
 :Msvc log                   open the live build-log buffer
 ```
 

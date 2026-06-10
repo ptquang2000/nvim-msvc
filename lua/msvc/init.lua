@@ -32,6 +32,7 @@ local Msvc = {
     solution_candidates = {},
     _setup_called = false,
     _context_store = {},
+    _last_build_key = nil,
 }
 
 local function log_warn(...)
@@ -92,68 +93,6 @@ function Msvc:resolve_install(opts)
         vs_requires = prof.vs_requires,
     })
     return self.install
-end
-
---- Scan for `.sln` candidates (git-aware, excluding submodules and the
---- active profile's compile_commands `builddir`). When the previously
---- active solution still appears in the candidate set it is preserved;
---- when a unique candidate is discovered it is auto-selected; when
---- multiple candidates exist but exactly one sits in the project root
---- (git toplevel, or cwd when not in a git tree) that root-level one
---- is auto-selected; otherwise the user must pick one with
---- `:Msvc solution <path>`.
-function Msvc:discover_solution()
-    local prof = self:active_profile() or {}
-    local cc = prof.compile_commands or {}
-    local extra_dirs = {}
-    if type(cc.builddir) == "string" and cc.builddir ~= "" then
-        extra_dirs[#extra_dirs + 1] = cc.builddir
-    end
-    local cwd = vim.fn.getcwd()
-    local cands = Discover.find_solutions(cwd, {
-        extra_dirs = extra_dirs,
-    })
-    self.solution_candidates = cands
-
-    local current = self.solution
-    local kept = false
-    if current and Util.is_file(current) then
-        local lower = current:lower()
-        for _, c in ipairs(cands) do
-            if c:lower() == lower then
-                kept = true
-                break
-            end
-        end
-    end
-    if not kept then
-        if #cands == 1 then
-            self.solution = cands[1]
-        else
-            local norm_cwd = Util.normalize_path(cwd)
-            local root = Discover._git_toplevel(norm_cwd) or norm_cwd
-            local root_lower = root and root ~= "" and root:lower() or nil
-            local in_root = {}
-            if root_lower then
-                for _, c in ipairs(cands) do
-                    local d = Util.dirname(c)
-                    if d and d:lower() == root_lower then
-                        in_root[#in_root + 1] = c
-                    end
-                end
-            end
-            if #in_root == 1 then
-                self.solution = in_root[1]
-            else
-                self.solution = nil
-                self.project = nil
-            end
-        end
-    end
-    self.solution_projects = self.solution
-            and Discover.parse_solution_projects(self.solution)
-        or {}
-    return self.solution_candidates
 end
 
 --- Set the active profile by name. Returns true on success.
@@ -268,7 +207,7 @@ function Msvc:build(target_override)
     local target_path = pick_target(self)
     if not target_path then
         Log:error(
-            "msvc: no .sln or .vcxproj selected (cd into a project tree, then `:Msvc discover`)"
+            "msvc: no .sln or .vcxproj selected (open a .sln buffer or use `:Msvc solution <path>`)"
         )
         return false
     end
@@ -321,6 +260,7 @@ function Msvc:build(target_override)
     end
 
     local self_ref = self
+    self._last_build_key = make_context_key(self.solution, self.project)
     return Build.spawn({
         msbuild = msbuild,
         target_path = target_path,
@@ -398,7 +338,16 @@ local function do_setup(self, user_config)
         self.profile_name = self.config.settings.default_profile
     end
 
-    self:discover_solution()
+    -- Startup: auto-select if exactly one .sln in cwd
+    local cwd = vim.fn.getcwd()
+    local startup_slns = vim.fn.glob(Util.join_path(cwd, "*.sln"), true, true)
+    if type(startup_slns) == "table" and #startup_slns == 1 then
+        local norm = Util.normalize_path(startup_slns[1])
+        if norm and Util.is_file(norm) then
+            self.solution_candidates = { norm }
+            self:set_solution(norm)
+        end
+    end
 
     local group = vim.api.nvim_create_augroup("Msvc", { clear = true })
 
@@ -429,63 +378,6 @@ local function do_setup(self, user_config)
                     self.solution,
                     #self.solution_projects
                 )
-            end
-        end,
-    })
-
-    -- Refresh candidates when navigating in a directory explorer (netrw, etc.).
-    vim.api.nvim_create_autocmd("BufEnter", {
-        group = group,
-        callback = function()
-            local bufname = vim.api.nvim_buf_get_name(0)
-            if vim.fn.isdirectory(bufname) ~= 1 then
-                return
-            end
-            local dir = Util.normalize_path(bufname)
-            if not dir or dir == "" then
-                return
-            end
-            local raw = vim.fn.globpath(dir, "*.sln", true, true)
-            local new_cands = {}
-            for _, p in ipairs(type(raw) == "table" and raw or {}) do
-                local norm = Util.normalize_path(p)
-                if norm and Util.is_file(norm) then
-                    new_cands[#new_cands + 1] = norm
-                end
-            end
-            if #new_cands == 0 then
-                return
-            end
-            local changed = false
-            for _, c in ipairs(new_cands) do
-                local lower = c:lower()
-                local exists = false
-                for _, existing in ipairs(self.solution_candidates) do
-                    if existing:lower() == lower then
-                        exists = true
-                        break
-                    end
-                end
-                if not exists then
-                    self.solution_candidates[#self.solution_candidates + 1] = c
-                    changed = true
-                end
-            end
-            if changed then
-                table.sort(self.solution_candidates)
-                Log:debug(
-                    "msvc: candidates updated (%d total)",
-                    #self.solution_candidates
-                )
-            end
-            if #new_cands == 1 and not self.solution then
-                if self:set_solution(new_cands[1]) then
-                    Log:info(
-                        "msvc: solution = %s (%d projects)",
-                        self.solution,
-                        #self.solution_projects
-                    )
-                end
             end
         end,
     })
