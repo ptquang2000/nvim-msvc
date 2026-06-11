@@ -138,9 +138,42 @@ local function build_context_completions(msvc)
     return out
 end
 
+-- Returns the label without the " | config|platform" suffix. Used as a
+-- fallback in parse_context_label so `:Msvc build WAOnDemand-v12.sln` works
+-- regardless of which profile is active.
+local function context_key_structural_label(msvc, k)
+    local sln, proj = split_context_key(k)
+    if not sln or sln == "" then
+        return nil
+    end
+    local sln_base = Util.basename(sln)
+    if not proj or proj == "" then
+        return sln_base
+    end
+    local proj_name = Util.basename(proj)
+    for _, entry in ipairs(msvc.solution_projects or {}) do
+        if entry.path:lower() == proj:lower() then
+            proj_name = entry.name
+            break
+        end
+    end
+    return sln_base .. " | " .. proj_name
+end
+
 local function parse_context_label(msvc, label)
-    for _, k in ipairs(collect_context_keys(msvc)) do
+    local keys = collect_context_keys(msvc)
+    for _, k in ipairs(keys) do
         if context_key_label(msvc, k) == label then
+            local sln, proj = split_context_key(k)
+            return sln ~= "" and sln or nil, proj ~= "" and proj or nil
+        end
+    end
+    -- Fallback: match by structural label (sln + project) ignoring config suffix.
+    -- Allows `:Msvc build WAOnDemand-v12.sln` to work even when a profile with
+    -- configuration/platform is active and the full label is
+    -- "WAOnDemand-v12.sln | Debug|x64".
+    for _, k in ipairs(keys) do
+        if context_key_structural_label(msvc, k) == label then
             local sln, proj = split_context_key(k)
             return sln ~= "" and sln or nil, proj ~= "" and proj or nil
         end
