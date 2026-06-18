@@ -129,9 +129,19 @@ end
 
 local function build_context_completions(msvc)
     local out = {}
+    local seen = {}
     for _, k in ipairs(collect_context_keys(msvc)) do
         local label = context_key_label(msvc, k)
         if label then
+            seen[label] = true
+            out[#out + 1] = label
+        end
+    end
+    -- Also offer solution candidates that aren't already in the context store.
+    for _, cand in ipairs(msvc.solution_candidates or {}) do
+        local label = Util.basename(cand)
+        if not seen[label] then
+            seen[label] = true
             out[#out + 1] = label
         end
     end
@@ -176,6 +186,15 @@ local function parse_context_label(msvc, label)
         if context_key_structural_label(msvc, k) == label then
             local sln, proj = split_context_key(k)
             return sln ~= "" and sln or nil, proj ~= "" and proj or nil
+        end
+    end
+    -- Fallback: match by solution basename against discovered candidates.
+    -- Handles the case where the solution is known but has never been selected
+    -- (not in context_store, _last_build_key, or current solution), so it
+    -- doesn't appear in collect_context_keys at all.
+    for _, cand in ipairs(msvc.solution_candidates or {}) do
+        if Util.basename(cand) == label then
+            return cand, nil
         end
     end
     Log:error("msvc: no context matches label %q", label)
