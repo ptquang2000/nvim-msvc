@@ -210,11 +210,21 @@ SUBCOMMANDS.build = {
             if sln == false then
                 return
             end
+            local switched = false
             if sln ~= msvc.solution then
                 if not msvc:set_solution(sln) then return end
+                switched = true
             end
             if proj ~= msvc.project then
                 if not msvc:set_project(proj) then return end
+                switched = true
+            end
+            if not switched then
+                -- sln and proj already active: set_solution/set_project were not
+                -- called so _load_context was never invoked. Restore the stored
+                -- profile/overrides for this context explicitly so the label's
+                -- encoded profile is actually used.
+                msvc:_load_context(sln, proj)
             end
         end
         msvc:build()
