@@ -325,39 +325,6 @@ local function do_setup(self, user_config)
         end
     end
 
-    local group = vim.api.nvim_create_augroup("Msvc", { clear = true })
-
-    -- Auto-select a .sln when its buffer is entered, and add it to candidates.
-    vim.api.nvim_create_autocmd("BufEnter", {
-        group = group,
-        pattern = "*.sln",
-        callback = function()
-            local path = Util.normalize_path(vim.api.nvim_buf_get_name(0))
-            if not path or path == "" or not Util.is_file(path) then
-                return
-            end
-            local lower = path:lower()
-            local found = false
-            for _, c in ipairs(self.solution_candidates) do
-                if c:lower() == lower then
-                    found = true
-                    break
-                end
-            end
-            if not found then
-                self.solution_candidates[#self.solution_candidates + 1] = path
-                table.sort(self.solution_candidates)
-            end
-            if self:set_solution(path) then
-                Log:info(
-                    "msvc: solution = %s (%d projects)",
-                    self.solution,
-                    #self.solution_projects
-                )
-            end
-        end,
-    })
-
     require("msvc.commands").setup(self)
     Ext.extensions:emit(Ext.event_names.SETUP_CALLED, self)
     return self

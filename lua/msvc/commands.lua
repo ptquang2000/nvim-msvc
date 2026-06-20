@@ -1,11 +1,52 @@
 -- msvc.commands — `:Msvc <subcommand>` dispatcher.
--- Only `cancel` and `log` survive as subcommands; no-arg opens the buffer.
+-- Subcommands: add, cancel, log. No-arg opens the buffer.
 
 local Log = require("msvc.log")
+local Util = require("msvc.util")
 
 local M = {}
 
 local SUBCOMMANDS = {}
+
+SUBCOMMANDS.add = {
+    desc = "add a .sln to solution candidates and select it",
+    run = function(msvc, rest)
+        local path = (rest and rest[1] ~= nil and rest[1] ~= "") and rest[1]
+            or vim.api.nvim_buf_get_name(0)
+        if not path or path == "" then
+            Log:error("msvc add: no path given and current buffer has no name")
+            return
+        end
+        if not path:match("%.sln$") then
+            Log:error("msvc add: %q is not a .sln file", path)
+            return
+        end
+        local norm = Util.normalize_path(path)
+        if not norm or not Util.is_file(norm) then
+            Log:error("msvc add: file not found: %s", path)
+            return
+        end
+        local lower = norm:lower()
+        local found = false
+        for _, c in ipairs(msvc.solution_candidates) do
+            if c:lower() == lower then
+                found = true
+                break
+            end
+        end
+        if not found then
+            msvc.solution_candidates[#msvc.solution_candidates + 1] = norm
+            table.sort(msvc.solution_candidates)
+        end
+        if msvc:set_solution(norm) then
+            Log:info(
+                "msvc: solution = %s (%d projects)",
+                msvc.solution,
+                #msvc.solution_projects
+            )
+        end
+    end,
+}
 
 SUBCOMMANDS.cancel = {
     desc = "cancel an in-flight build",
@@ -39,6 +80,13 @@ local function complete(msvc, arglead, cmdline, _cursorpos)
         table.sort(out)
         return out
     end
+    -- File completion for `add <path>`
+    if
+        (#parts == 2 and trailing_space and parts[2] == "add")
+        or (#parts == 3 and not trailing_space and parts[2] == "add")
+    then
+        return vim.fn.getcompletion(arglead, "file")
+    end
     return {}
 end
 
@@ -55,7 +103,7 @@ function M.setup(msvc)
         local sub = args[1]
         local cmd = SUBCOMMANDS[sub]
         if not cmd then
-            Log:error("msvc: unknown subcommand %q (available: cancel, log)", sub)
+            Log:error("msvc: unknown subcommand %q (available: add, cancel, log)", sub)
             return
         end
         local rest = {}
