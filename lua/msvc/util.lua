@@ -106,6 +106,14 @@ function M.is_dir(p)
     return st ~= nil and st.type == "directory"
 end
 
+function M.get_mtime(p)
+    if p == nil or p == "" then
+        return 0
+    end
+    local st = uv.fs_stat(p)
+    return st and st.mtime.sec or 0
+end
+
 function M.read_file(p)
     if p == nil or p == "" then
         return nil, "empty path"

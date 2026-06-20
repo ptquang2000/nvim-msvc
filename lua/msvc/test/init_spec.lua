@@ -305,6 +305,183 @@ describe("msvc.init — set_solution / set_project", function()
     end)
 end)
 
+describe("msvc.init — _compute_sln_mtime and compile_commands dirty check", function()
+    local Msvc, Util, CompileCommands
+    local tmpdir
+
+    before_each(function()
+        helpers.reset()
+        Msvc = require("msvc")
+        Util = require("msvc.util")
+        CompileCommands = require("msvc.compile_commands")
+        tmpdir = vim.fn.tempname()
+        vim.fn.mkdir(tmpdir, "p")
+        Msvc._cc_fingerprints = {}
+        Msvc.config = { settings = { compile_commands = { enabled = true } } }
+    end)
+
+    after_each(function()
+        if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+            vim.fn.delete(tmpdir, "rf")
+        end
+    end)
+
+    local function write(path, body)
+        vim.fn.mkdir(Util.dirname(path), "p")
+        local fh = io.open(path, "wb")
+        fh:write(body or "")
+        fh:close()
+    end
+
+    -- ─── _compute_sln_mtime ───────────────────────────────────────────────────
+
+    it("_compute_sln_mtime returns max of sln and vcxproj mtimes", function()
+        local orig_get_mtime = Util.get_mtime
+        local mtime_map = {
+            ["/fake/A.sln"] = 100,
+            ["/fake/P1.vcxproj"] = 200,
+            ["/fake/P2.vcxproj"] = 150,
+        }
+        Util.get_mtime = function(p) return mtime_map[p] or 0 end
+
+        Msvc.solution_projects = {
+            { name = "P1", path = "/fake/P1.vcxproj" },
+            { name = "P2", path = "/fake/P2.vcxproj" },
+        }
+        local result = Msvc:_compute_sln_mtime("/fake/A.sln")
+        Util.get_mtime = orig_get_mtime
+
+        assert.are.equal(200, result)
+    end)
+
+    it("_compute_sln_mtime returns sln mtime when no vcxprojs are higher", function()
+        local orig_get_mtime = Util.get_mtime
+        local mtime_map = {
+            ["/fake/A.sln"] = 500,
+            ["/fake/P.vcxproj"] = 300,
+        }
+        Util.get_mtime = function(p) return mtime_map[p] or 0 end
+
+        Msvc.solution_projects = { { name = "P", path = "/fake/P.vcxproj" } }
+        local result = Msvc:_compute_sln_mtime("/fake/A.sln")
+        Util.get_mtime = orig_get_mtime
+
+        assert.are.equal(500, result)
+    end)
+
+    it("_compute_sln_mtime returns 0 when nothing is stat-able", function()
+        local orig_get_mtime = Util.get_mtime
+        Util.get_mtime = function(_) return 0 end
+        Msvc.solution_projects = {}
+        local result = Msvc:_compute_sln_mtime("/nonexistent/A.sln")
+        Util.get_mtime = orig_get_mtime
+        assert.are.equal(0, result)
+    end)
+
+    -- ─── dirty-check skip ─────────────────────────────────────────────────────
+
+    it("_run_compile_commands skips generation when fingerprint matches mtime", function()
+        local orig_get_mtime = Util.get_mtime
+        Util.get_mtime = function(_) return 1000 end
+        local orig_generate = CompileCommands.generate
+        local generate_called = false
+        CompileCommands.generate = function(_) generate_called = true return true end
+
+        local sln = "/fake/A.sln"
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.solution_projects = {}
+        Msvc._cc_fingerprints[sln:lower()] = 1000
+
+        Msvc:_run_compile_commands(Msvc.settings, nil)
+
+        Util.get_mtime = orig_get_mtime
+        CompileCommands.generate = orig_generate
+        assert.is_false(generate_called, "generate must not be called when fingerprint matches")
+    end)
+
+    it("_run_compile_commands generates and stores fingerprint on success when mtime changed", function()
+        local orig_get_mtime = Util.get_mtime
+        Util.get_mtime = function(_) return 2000 end
+        local orig_generate = CompileCommands.generate
+        local captured_on_done
+        CompileCommands.generate = function(opts)
+            captured_on_done = opts.on_done
+            return true
+        end
+
+        local sln = "/fake/B.sln"
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.solution_projects = {}
+        Msvc._cc_fingerprints[sln:lower()] = 1000  -- stale fingerprint
+
+        Msvc:_run_compile_commands(Msvc.settings, nil)
+        -- Simulate the async on_done callback
+        assert.is_truthy(captured_on_done, "on_done should be passed to generate")
+        captured_on_done(true)
+
+        Util.get_mtime = orig_get_mtime
+        CompileCommands.generate = orig_generate
+        assert.are.equal(2000, Msvc._cc_fingerprints[sln:lower()], "fingerprint should be stored on success")
+    end)
+
+    it("_run_compile_commands does not store fingerprint on failure", function()
+        local orig_get_mtime = Util.get_mtime
+        Util.get_mtime = function(_) return 3000 end
+        local orig_generate = CompileCommands.generate
+        local captured_on_done
+        CompileCommands.generate = function(opts)
+            captured_on_done = opts.on_done
+            return true
+        end
+
+        local sln = "/fake/C.sln"
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.solution_projects = {}
+
+        Msvc:_run_compile_commands(Msvc.settings, nil)
+        captured_on_done(false)  -- simulate failure
+
+        Util.get_mtime = orig_get_mtime
+        CompileCommands.generate = orig_generate
+        assert.is_nil(Msvc._cc_fingerprints[sln:lower()], "fingerprint must not be stored on failure")
+    end)
+
+    it("_run_compile_commands always generates when current_mtime is 0", function()
+        local orig_get_mtime = Util.get_mtime
+        Util.get_mtime = function(_) return 0 end
+        local orig_generate = CompileCommands.generate
+        local generate_called = false
+        CompileCommands.generate = function(_) generate_called = true return true end
+
+        local sln = "/fake/D.sln"
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.solution_projects = {}
+        Msvc._cc_fingerprints[sln:lower()] = 0  -- same as computed mtime
+
+        Msvc:_run_compile_commands(Msvc.settings, nil)
+
+        Util.get_mtime = orig_get_mtime
+        CompileCommands.generate = orig_generate
+        assert.is_true(generate_called, "must always generate when mtime is 0 (stat failed)")
+    end)
+
+    it("_run_compile_commands is a no-op when solution is nil", function()
+        local orig_generate = CompileCommands.generate
+        local generate_called = false
+        CompileCommands.generate = function(_) generate_called = true return true end
+
+        Msvc.solution = nil
+        Msvc:_run_compile_commands(Msvc.settings, nil)
+
+        CompileCommands.generate = orig_generate
+        assert.is_false(generate_called)
+    end)
+end)
+
 describe("msvc.init — build dispatches with fixture solutions", function()
     local Msvc, Config, Util, Build
     local FIXTURES = "tests/fixtures"

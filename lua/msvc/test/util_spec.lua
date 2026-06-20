@@ -69,4 +69,27 @@ describe("msvc.util", function()
             Util.dedupe({ "a", "b", "a", "", "c", "b" })
         )
     end)
+
+    it("get_mtime returns 0 for nil path", function()
+        assert.are.equal(0, Util.get_mtime(nil))
+    end)
+
+    it("get_mtime returns 0 for empty string", function()
+        assert.are.equal(0, Util.get_mtime(""))
+    end)
+
+    it("get_mtime returns 0 for missing path", function()
+        assert.are.equal(0, Util.get_mtime("/nonexistent/path/that/does/not/exist.sln"))
+    end)
+
+    it("get_mtime returns a positive integer for an existing file", function()
+        local tmp = vim.fn.tempname() .. ".sln"
+        local fh = io.open(tmp, "wb")
+        fh:write("")
+        fh:close()
+        local mtime = Util.get_mtime(tmp)
+        vim.fn.delete(tmp)
+        assert.is_true(type(mtime) == "number", "get_mtime should return a number")
+        assert.is_true(mtime > 0, "get_mtime should return a positive integer for existing file")
+    end)
 end)

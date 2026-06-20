@@ -30,6 +30,7 @@ local Msvc = {
     solutions = {},
     _setup_called = false,
     _context_store = {},
+    _cc_fingerprints = {},
     _last_build_key = nil,
     _default_settings = nil,
 }
@@ -228,7 +229,6 @@ function Msvc:build(target_override)
         solution_dir = Util.normalize_path(sln_dir)
     end
 
-    local self_ref = self
     self._last_build_key = make_context_key(self.solution, self.project)
     return Build.spawn({
         msbuild = msbuild,
@@ -238,11 +238,6 @@ function Msvc:build(target_override)
         jobs = s.jobs,
         solution_dir = solution_dir,
         target = target_override,
-        on_done = function(ok)
-            if ok then
-                self_ref:_run_compile_commands(s, install_path)
-            end
-        end,
     })
 end
 
@@ -300,19 +295,44 @@ function Msvc:cancel()
     return Build.cancel()
 end
 
+function Msvc:_compute_sln_mtime(sln_path)
+    local max_mtime = Util.get_mtime(sln_path)
+    for _, proj in ipairs(self.solution_projects or {}) do
+        local m = Util.get_mtime(proj.path)
+        if m > max_mtime then
+            max_mtime = m
+        end
+    end
+    return max_mtime
+end
+
 function Msvc:_run_compile_commands(settings, install_path)
     local cc = (self.config.settings or {}).compile_commands or {}
     if not CompileCommands.is_enabled(cc) then
         return
     end
+    local sln = self.solution
+    if not sln then
+        return
+    end
+    local key = sln:lower()
+    local current_mtime = self:_compute_sln_mtime(sln)
+    if current_mtime > 0 and self._cc_fingerprints[key] == current_mtime then
+        return
+    end
     CompileCommands.generate({
-        solution = self.solution,
+        solution = sln,
         project = self.project,
         configuration = settings and settings.configuration,
         platform = settings and settings.platform,
         jobs = settings and settings.jobs,
         cc = cc,
         vs_path = install_path,
+        on_done = function(ok)
+            if ok and current_mtime > 0 then
+                self._cc_fingerprints[key] = current_mtime
+            end
+        end,
     })
 end
 

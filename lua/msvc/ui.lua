@@ -29,9 +29,10 @@ local HL_NS = vim.api.nvim_create_namespace("MsvcUI")
 -- Module-level state — one msvc:// buffer at a time.
 local _buf = nil
 local _msvc = nil
-local _line_map = {}        -- 1-based line → entity table
-local _expanded_field = nil -- settings field name currently expanded, or nil
-local _target = "build"     -- "build" | "clean" | "rebuild" | "compile_file"
+local _line_map = {}           -- 1-based line → entity table
+local _expanded_fields = {}    -- settings fields expanded (field name → true)
+local _expanded_solutions = {} -- solutions with projects visible in add mode (path:lower() → true)
+local _target = "build"        -- "build" | "clean" | "rebuild" | "compile_file"
 local _source_file = nil    -- captured at open() for single-file compile
 local _mode = "normal"      -- "normal" | "add"
 local _discovered = {}      -- discovered-but-not-staged solution paths (add mode)
@@ -41,7 +42,8 @@ local function reset()
     _buf = nil
     _msvc = nil
     _line_map = {}
-    _expanded_field = nil
+    _expanded_fields = {}
+    _expanded_solutions = {}
     _target = "build"
     _source_file = nil
     _mode = "normal"
@@ -87,25 +89,30 @@ local function build_entries(msvc)
             for _, sln_path in ipairs(staged) do
                 local is_active = _add_selected
                     and _add_selected:lower() == sln_path:lower()
-                local sln_marker = is_active and "* " or "  "
+                local sln_lower = sln_path:lower()
+                local is_expanded = _expanded_solutions[sln_lower]
+                local active_marker = is_active and "* " or "  "
+                local expand_marker = is_expanded and "v " or "  "
                 add(
-                    sln_marker .. Util.basename(sln_path),
+                    active_marker .. expand_marker .. Util.basename(sln_path),
                     { type = ENT.SOLUTION, path = sln_path }
                 )
-                local projects = Discover.parse_solution_projects(sln_path)
-                for _, proj in ipairs(projects) do
-                    local is_pinned = msvc.project
-                        and msvc.project:lower() == proj.path:lower()
-                    local proj_marker = is_pinned and "  > " or "    "
-                    add(
-                        proj_marker .. proj.name,
-                        {
-                            type = ENT.PROJECT,
-                            solution = sln_path,
-                            name = proj.name,
-                            path = proj.path,
-                        }
-                    )
+                if is_expanded then
+                    local projects = Discover.parse_solution_projects(sln_path)
+                    for _, proj in ipairs(projects) do
+                        local is_pinned = msvc.project
+                            and msvc.project:lower() == proj.path:lower()
+                        local proj_marker = is_pinned and "  > " or "    "
+                        add(
+                            proj_marker .. proj.name,
+                            {
+                                type = ENT.PROJECT,
+                                solution = sln_path,
+                                name = proj.name,
+                                path = proj.path,
+                            }
+                        )
+                    end
                 end
             end
         end
@@ -134,7 +141,7 @@ local function build_entries(msvc)
         for _, field in ipairs(Config.SETTINGS_FIELDS) do
             local val = s[field]
             local val_str = (val ~= nil) and tostring(val) or "-"
-            local is_expanded = _expanded_field == field
+            local is_expanded = _expanded_fields[field]
             local marker = is_expanded and "v " or "  "
             add(
                 marker .. ("  %-15s %s"):format(field, val_str),
@@ -354,10 +361,25 @@ local function setup_keymaps(msvc, buf)
         local ent = entity_at_cursor()
         if not ent then return end
         if ent.type == ENT.SETTINGS_FIELD then
-            _expanded_field = (_expanded_field == ent.field) and nil or ent.field
+            if _expanded_fields[ent.field] then
+                _expanded_fields[ent.field] = nil
+            else
+                _expanded_fields[ent.field] = true
+            end
             render(msvc, buf)
         elseif ent.type == ENT.SETTINGS_OPTION then
-            _expanded_field = nil
+            _expanded_fields[ent.field] = nil
+            render(msvc, buf)
+        elseif ent.type == ENT.SOLUTION then
+            local k = ent.path:lower()
+            if _expanded_solutions[k] then
+                _expanded_solutions[k] = nil
+            else
+                _expanded_solutions[k] = true
+            end
+            render(msvc, buf)
+        elseif ent.type == ENT.PROJECT and _mode == "add" and ent.solution then
+            _expanded_solutions[ent.solution:lower()] = nil
             render(msvc, buf)
         end
     end)
@@ -410,7 +432,7 @@ local function setup_keymaps(msvc, buf)
             if ent.field == "vs_version" then
                 msvc.install = nil
             end
-            _expanded_field = nil
+            _expanded_fields[ent.field] = nil
             render(msvc, buf)
         elseif ent.type == ENT.PROJECT then
             if ent.path ~= msvc.project then
@@ -435,6 +457,7 @@ local function setup_keymaps(msvc, buf)
                 msvc.solution_projects = {}
             end
             if _mode == "add" then
+                _expanded_solutions[lower] = nil
                 if _add_selected and _add_selected:lower() == lower then
                     _add_selected = nil
                 end
@@ -529,7 +552,8 @@ function M.open(msvc, mode, discovered)
         setup_keymaps(msvc, buf)
         _buf = buf
         _msvc = msvc
-        _expanded_field = nil
+        _expanded_fields = {}
+        _expanded_solutions = {}
     end
 
     -- Find or create a window for this buffer.
@@ -553,11 +577,20 @@ end
 -- Expose internals for unit testing.
 M._build_entries = build_entries
 M._ENT = ENT
-M._get_expanded_field = function()
-    return _expanded_field
+M._get_expanded_fields = function()
+    return _expanded_fields
+end
+M._set_expanded_fields = function(t)
+    _expanded_fields = t
 end
 M._set_expanded_field = function(f)
-    _expanded_field = f
+    _expanded_fields = (f ~= nil) and { [f] = true } or {}
+end
+M._get_expanded_solutions = function()
+    return _expanded_solutions
+end
+M._set_expanded_solutions = function(t)
+    _expanded_solutions = t
 end
 M._get_target = function()
     return _target

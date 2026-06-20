@@ -195,19 +195,21 @@ describe("msvc.ui", function()
         assert.is_true(has_x64)
     end)
 
-    it("expanding a different field collapses the first", function()
+    it("two settings fields can be expanded simultaneously", function()
         local msvc = fake_msvc()
-        UI._set_expanded_field("arch")
-        UI._set_expanded_field("vs_version")
-        assert.are.equal("vs_version", UI._get_expanded_field())
+        UI._set_expanded_fields({ arch = true, vs_version = true })
         local entries = UI._build_entries(msvc)
-        local has_arch_opt = false
+        local has_arch_opt, has_vs_opt = false, false
         for _, e in ipairs(entries) do
             if e.entity.type == UI._ENT.SETTINGS_OPTION and e.entity.field == "arch" then
                 has_arch_opt = true
             end
+            if e.entity.type == UI._ENT.SETTINGS_OPTION and e.entity.field == "vs_version" then
+                has_vs_opt = true
+            end
         end
-        assert.is_false(has_arch_opt)
+        assert.is_true(has_arch_opt, "arch options should be visible when expanded")
+        assert.is_true(has_vs_opt, "vs_version options should be visible when expanded")
     end)
 
     it("v prefix marker appears on expanded field line", function()
@@ -426,11 +428,15 @@ describe("msvc.ui", function()
         assert.are.equal("build", UI._get_target())
     end)
 
-    it("_set_expanded_field / _get_expanded_field round-trips", function()
+    it("_set_expanded_field convenience sets single field; _set_expanded_fields sets arbitrary set", function()
         UI._set_expanded_field("platform")
-        assert.are.equal("platform", UI._get_expanded_field())
+        assert.is_true(UI._get_expanded_fields()["platform"] == true)
         UI._set_expanded_field(nil)
-        assert.is_nil(UI._get_expanded_field())
+        assert.are.same({}, UI._get_expanded_fields())
+        UI._set_expanded_fields({ arch = true, jobs = true })
+        local f = UI._get_expanded_fields()
+        assert.is_true(f["arch"] == true)
+        assert.is_true(f["jobs"] == true)
     end)
 
     it("_set_mode / _get_mode round-trips", function()
@@ -448,25 +454,89 @@ describe("msvc.ui", function()
 
     it("_reset clears all module state including _target, mode, discovered, and _add_selected", function()
         UI._set_target("rebuild")
-        UI._set_expanded_field("arch")
+        UI._set_expanded_fields({ arch = true, jobs = true })
+        UI._set_expanded_solutions({ ["/a/foo.sln"] = true })
         UI._set_mode("add")
         UI._set_discovered({ "/a/foo.sln" })
         UI._set_add_selected("/a/foo.sln")
         UI._reset()
         assert.are.equal("build", UI._get_target())
-        assert.is_nil(UI._get_expanded_field())
+        assert.are.same({}, UI._get_expanded_fields())
+        assert.are.same({}, UI._get_expanded_solutions())
         assert.are.equal("normal", UI._get_mode())
         assert.are.same({}, UI._get_discovered())
         assert.is_nil(UI._get_add_selected())
     end)
 
-    -- ─── project entries ─────────────────────────────────────────────────────
+    -- ─── add mode expand/collapse ────────────────────────────────────────────
 
-    it("PROJECT entries appear in add-mode staged list after SOLUTION", function()
+    it("add mode hides PROJECT entries for solutions not in _expanded_solutions", function()
         local sln = "/a/foo.sln"
         local msvc = fake_msvc({ solutions = { sln } })
         UI._set_mode("add")
         UI._set_discovered({})
+        -- _expanded_solutions is empty (default after reset)
+        local Discover = require("msvc.discover")
+        local orig = Discover.parse_solution_projects
+        Discover.parse_solution_projects = function(_)
+            return { { name = "MyProj", path = "/a/src/MyProj.vcxproj" } }
+        end
+        local entries = UI._build_entries(msvc)
+        Discover.parse_solution_projects = orig
+        for _, e in ipairs(entries) do
+            assert.are_not.equal(UI._ENT.PROJECT, e.entity.type,
+                "PROJECT entries must not appear when solution is not expanded")
+        end
+    end)
+
+    it("SOLUTION line has 'v' marker when solution is in _expanded_solutions", function()
+        local sln = "/a/foo.sln"
+        local msvc = fake_msvc({ solutions = { sln } })
+        UI._set_mode("add")
+        UI._set_discovered({})
+        UI._set_expanded_solutions({ [sln:lower()] = true })
+        local Discover = require("msvc.discover")
+        local orig = Discover.parse_solution_projects
+        Discover.parse_solution_projects = function(_) return {} end
+        local entries = UI._build_entries(msvc)
+        Discover.parse_solution_projects = orig
+        for _, e in ipairs(entries) do
+            if e.entity.type == UI._ENT.SOLUTION and e.entity.path == sln then
+                assert.is_truthy(e.text:find("v "), "expanded solution should have 'v' marker")
+                return
+            end
+        end
+        error("SOLUTION entry not found")
+    end)
+
+    it("SOLUTION line has no 'v' marker when solution is not expanded", function()
+        local sln = "/a/foo.sln"
+        local msvc = fake_msvc({ solutions = { sln } })
+        UI._set_mode("add")
+        UI._set_discovered({})
+        -- _expanded_solutions is empty
+        local Discover = require("msvc.discover")
+        local orig = Discover.parse_solution_projects
+        Discover.parse_solution_projects = function(_) return {} end
+        local entries = UI._build_entries(msvc)
+        Discover.parse_solution_projects = orig
+        for _, e in ipairs(entries) do
+            if e.entity.type == UI._ENT.SOLUTION and e.entity.path == sln then
+                assert.is_falsy(e.text:find("v "), "collapsed solution must not have 'v' marker")
+                return
+            end
+        end
+        error("SOLUTION entry not found")
+    end)
+
+    -- ─── project entries ─────────────────────────────────────────────────────
+
+    it("PROJECT entries appear in add-mode staged list after SOLUTION when expanded", function()
+        local sln = "/a/foo.sln"
+        local msvc = fake_msvc({ solutions = { sln } })
+        UI._set_mode("add")
+        UI._set_discovered({})
+        UI._set_expanded_solutions({ [sln:lower()] = true })
         local Discover = require("msvc.discover")
         local orig = Discover.parse_solution_projects
         Discover.parse_solution_projects = function(_)
@@ -557,7 +627,7 @@ describe("msvc.ui", function()
         error("PROJECT entry for UnpinnedProj not found")
     end)
 
-    it("pinned project has '> ' prefix in add mode under parent solution", function()
+    it("pinned project has '> ' prefix in add mode under parent solution when expanded", function()
         local sln = "/a/foo.sln"
         local proj = "/a/src/MyProj.vcxproj"
         local msvc = fake_msvc({
@@ -567,6 +637,7 @@ describe("msvc.ui", function()
         })
         UI._set_mode("add")
         UI._set_discovered({})
+        UI._set_expanded_solutions({ [sln:lower()] = true })
         local Discover = require("msvc.discover")
         local orig = Discover.parse_solution_projects
         Discover.parse_solution_projects = function(_)
@@ -964,10 +1035,10 @@ describe("msvc.ui", function()
 
         -- ─── = on SETTINGS_OPTION ────────────────────────────────────────────
 
-        it("= on SETTINGS_OPTION collapses the expanded field", function()
+        it("= on SETTINGS_OPTION collapses only that field", function()
             local msvc = fake_msvc()
             local _, lm = setup_keymap_buf(msvc, "normal")
-            UI._set_expanded_field("arch")
+            UI._set_expanded_fields({ arch = true, jobs = true })
             -- Re-render to get SETTINGS_OPTION lines in lm
             local entries = UI._build_entries(msvc)
             local lines, new_lm = {}, {}
@@ -986,7 +1057,119 @@ describe("msvc.ui", function()
             assert.is_truthy(opt_line, "SETTINGS_OPTION line not found")
             vim.api.nvim_win_set_cursor(0, { opt_line, 0 })
             feed("=")
-            assert.is_nil(UI._get_expanded_field())
+            local fields = UI._get_expanded_fields()
+            assert.is_nil(fields["arch"], "arch should be collapsed after = on its option")
+            assert.is_true(fields["jobs"] == true, "jobs should remain expanded")
+        end)
+
+        -- ─── = on SOLUTION / PROJECT (add mode) ─────────────────────────────
+
+        it("= on SOLUTION line in add mode expands that solution", function()
+            local msvc = fake_msvc({ solutions = { burn_sln } })
+            local _, lm = setup_keymap_buf(msvc, "add", {})
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line, "SOLUTION line not found")
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("=")
+            local sols = UI._get_expanded_solutions()
+            assert.is_true(sols[burn_sln:lower()] == true, "solution should be expanded after =")
+        end)
+
+        it("= on SOLUTION line again collapses it", function()
+            local msvc = fake_msvc({ solutions = { burn_sln } })
+            setup_keymap_buf(msvc, "add", {})
+            UI._set_expanded_solutions({ [burn_sln:lower()] = true })
+            -- Re-render to get updated line map
+            local entries = UI._build_entries(msvc)
+            local lines, new_lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                new_lm[i] = e.entity
+            end
+            local buf = UI._get_buf()
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            UI._set_line_map(new_lm)
+            local sol_line = find_line(new_lm, function(e)
+                return e.type == UI._ENT.SOLUTION and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line, "SOLUTION line not found")
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("=")
+            local sols = UI._get_expanded_solutions()
+            assert.is_nil(sols[burn_sln:lower()], "solution should be collapsed after second =")
+        end)
+
+        it("= on SOLUTION does not affect other solutions in _expanded_solutions", function()
+            local other_sln = "/fake/other/other.sln"
+            local msvc = fake_msvc({ solutions = { burn_sln, other_sln } })
+            local _, lm = setup_keymap_buf(msvc, "add", {})
+            UI._set_expanded_solutions({ [other_sln:lower()] = true })
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line)
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("=")
+            local sols = UI._get_expanded_solutions()
+            assert.is_true(sols[other_sln:lower()] == true, "other solution must remain expanded")
+        end)
+
+        it("= on PROJECT line in add mode collapses its parent solution", function()
+            local sln = burn_sln
+            local msvc = fake_msvc({ solutions = { sln } })
+            setup_keymap_buf(msvc, "add", {})
+            UI._set_expanded_solutions({ [sln:lower()] = true })
+            local Discover = require("msvc.discover")
+            local orig = Discover.parse_solution_projects
+            Discover.parse_solution_projects = function(_)
+                return { { name = "FakeProj", path = "/fake/F.vcxproj" } }
+            end
+            local entries = UI._build_entries(msvc)
+            Discover.parse_solution_projects = orig
+            local lines, new_lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                new_lm[i] = e.entity
+            end
+            local buf = UI._get_buf()
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            UI._set_line_map(new_lm)
+            local proj_line = find_line(new_lm, function(e)
+                return e.type == UI._ENT.PROJECT and e.name == "FakeProj"
+            end)
+            assert.is_truthy(proj_line, "PROJECT line not found")
+            vim.api.nvim_win_set_cursor(0, { proj_line, 0 })
+            feed("=")
+            local sols = UI._get_expanded_solutions()
+            assert.is_nil(sols[sln:lower()], "parent solution should be collapsed")
+        end)
+
+        it("= on PROJECT line in normal mode is a no-op for _expanded_solutions", function()
+            local sln = "/a/foo.sln"
+            local proj = "/a/P.vcxproj"
+            local msvc = fake_msvc({ solution = sln, solutions = { sln } })
+            local Discover = require("msvc.discover")
+            local orig = Discover.parse_solution_projects
+            Discover.parse_solution_projects = function(_)
+                return { { name = "P", path = proj } }
+            end
+            local _, lm = setup_keymap_buf(msvc, "normal")
+            Discover.parse_solution_projects = orig
+            local proj_line = find_line(lm, function(e)
+                return e.type == UI._ENT.PROJECT and e.path == proj
+            end)
+            assert.is_truthy(proj_line, "PROJECT line not found")
+            UI._set_expanded_solutions({ [sln:lower()] = true })
+            vim.api.nvim_win_set_cursor(0, { proj_line, 0 })
+            feed("=")
+            local sols = UI._get_expanded_solutions()
+            assert.is_true(sols[sln:lower()] == true, "= on PROJECT in normal mode must not modify _expanded_solutions")
         end)
 
         -- ─── b/c/r/f are no-ops in add mode ─────────────────────────────────
