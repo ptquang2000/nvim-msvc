@@ -100,7 +100,8 @@ via `set_solution()` / `set_project()`, the build is dispatched, and the log buf
 
 ### Reduce the command surface
 
-Only two `:Msvc` subcommands survive:
+Three `:Msvc` subcommands survive:
+- `:Msvc add [path]` — register a `.sln` and select it (see ADR 002)
 - `:Msvc cancel` — cancel an in-flight build (also available as `x` inside the buffer)
 - `:Msvc log` — open the log buffer (also available as `l` inside the buffer)
 

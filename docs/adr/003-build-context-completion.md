@@ -1,6 +1,6 @@
 # ADR 003: Build command takes context label, not MSBuild target
 
-**Status**: Accepted  
+**Status**: Superseded by ADR 004  
 **Date**: 2026-06-08
 
 ## Context
