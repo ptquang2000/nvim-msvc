@@ -19,7 +19,7 @@ local CompileCommands = require("msvc.compile_commands")
 ---@field settings table           flat build-settings for the active context
 ---@field install table|nil        last-resolved vswhere installation record
 ---@field solution_projects table  cached `{ name=, path= }` from the active sln
----@field solution_candidates string[] paths of all `.sln` files opened this session
+---@field solutions string[] paths of all registered `.sln` files
 local Msvc = {
     config = Config.get_default_config(),
     solution = nil,
@@ -27,7 +27,7 @@ local Msvc = {
     settings = vim.deepcopy(Config.DEFAULT_SETTINGS),
     install = nil,
     solution_projects = {},
-    solution_candidates = {},
+    solutions = {},
     _setup_called = false,
     _context_store = {},
     _last_build_key = nil,
@@ -113,7 +113,7 @@ function Msvc:set_solution(path)
     if path == nil or path == "" then
         new_solution = nil
     else
-        local cands = self.solution_candidates or {}
+        local cands = self.solutions or {}
         for _, cand in ipairs(cands) do
             if cand == path or cand:lower() == tostring(path):lower() then
                 new_solution = cand
@@ -310,7 +310,7 @@ local function do_setup(self, user_config)
     if type(startup_slns) == "table" and #startup_slns == 1 then
         local norm = Util.normalize_path(startup_slns[1])
         if norm and Util.is_file(norm) then
-            self.solution_candidates = { norm }
+            self.solutions = { norm }
             self:set_solution(norm)
         end
     end

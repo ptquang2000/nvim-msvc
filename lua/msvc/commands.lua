@@ -1,49 +1,74 @@
 -- msvc.commands — `:Msvc <subcommand>` dispatcher.
--- Subcommands: add, cancel, log. No-arg opens the buffer.
+-- Subcommands: add, cancel, log. No-arg opens the buffer with gating dispatch.
 
 local Log = require("msvc.log")
 local Util = require("msvc.util")
+local Discover = require("msvc.discover")
 
 local M = {}
 
 local SUBCOMMANDS = {}
 
+local function add_and_activate(msvc, norm)
+    local lower = norm:lower()
+    local found = false
+    for _, c in ipairs(msvc.solutions) do
+        if c:lower() == lower then
+            found = true
+            break
+        end
+    end
+    if not found then
+        msvc.solutions[#msvc.solutions + 1] = norm
+        table.sort(msvc.solutions)
+    end
+    if msvc:set_solution(norm) then
+        Log:info(
+            "msvc: solution = %s (%d projects)",
+            msvc.solution,
+            #msvc.solution_projects
+        )
+    end
+end
+
 SUBCOMMANDS.add = {
-    desc = "add a .sln to solution candidates and select it",
+    desc = "add a .sln to registered solutions and select it",
     run = function(msvc, rest)
-        local path = (rest and rest[1] ~= nil and rest[1] ~= "") and rest[1]
-            or vim.api.nvim_buf_get_name(0)
-        if not path or path == "" then
-            Log:error("msvc add: no path given and current buffer has no name")
-            return
-        end
-        if not path:match("%.sln$") then
-            Log:error("msvc add: %q is not a .sln file", path)
-            return
-        end
-        local norm = Util.normalize_path(path)
-        if not norm or not Util.is_file(norm) then
-            Log:error("msvc add: file not found: %s", path)
-            return
-        end
-        local lower = norm:lower()
-        local found = false
-        for _, c in ipairs(msvc.solution_candidates) do
-            if c:lower() == lower then
-                found = true
-                break
+        local explicit_arg = rest and rest[1] ~= nil and rest[1] ~= ""
+
+        if explicit_arg then
+            local path = rest[1]
+            if not path:match("%.sln$") then
+                Log:error("msvc add: %q is not a .sln file", path)
+                return
             end
+            local norm = Util.normalize_path(path)
+            if not norm or not Util.is_file(norm) then
+                Log:error("msvc add: file not found: %s", path)
+                return
+            end
+            add_and_activate(msvc, norm)
+            return
         end
-        if not found then
-            msvc.solution_candidates[#msvc.solution_candidates + 1] = norm
-            table.sort(msvc.solution_candidates)
+
+        -- No explicit arg: check current buffer
+        local bufname = vim.api.nvim_buf_get_name(0)
+        if bufname and bufname ~= "" and bufname:match("%.sln$") then
+            local norm = Util.normalize_path(bufname)
+            if not norm or not Util.is_file(norm) then
+                Log:error("msvc add: file not found: %s", bufname)
+                return
+            end
+            add_and_activate(msvc, norm)
+            return
         end
-        if msvc:set_solution(norm) then
-            Log:info(
-                "msvc: solution = %s (%d projects)",
-                msvc.solution,
-                #msvc.solution_projects
-            )
+
+        -- Discovery mode
+        local cwd = vim.fn.getcwd()
+        local found_slns = Discover.find_sln_files(cwd)
+        local ok, err = pcall(require("msvc.ui").open, msvc, "add", found_slns)
+        if not ok then
+            Log:error("msvc: %s", tostring(err))
         end
     end,
 }
@@ -94,9 +119,24 @@ function M.setup(msvc)
     vim.api.nvim_create_user_command("Msvc", function(opts)
         local args = opts.fargs
         if #args == 0 then
-            local ok, err = pcall(require("msvc.ui").open, msvc)
-            if not ok then
-                Log:error("msvc: %s", tostring(err))
+            local ui = require("msvc.ui")
+            local solutions = msvc.solutions or {}
+            if #solutions == 0 then
+                local ok, err = pcall(SUBCOMMANDS.add.run, msvc, {})
+                if not ok then
+                    Log:error("msvc: %s", tostring(err))
+                end
+            elseif #solutions == 1 then
+                msvc:set_solution(solutions[1])
+                local ok, err = pcall(ui.open, msvc, "normal")
+                if not ok then
+                    Log:error("msvc: %s", tostring(err))
+                end
+            else
+                local ok, err = pcall(ui.open, msvc, "normal")
+                if not ok then
+                    Log:error("msvc: %s", tostring(err))
+                end
             end
             return
         end

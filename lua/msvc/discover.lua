@@ -213,4 +213,44 @@ function M.discover_vcxproj_toolchain(vcxproj_path)
     return { winsdk = winsdk, vcvars_ver = toolset }
 end
 
+--- Find .sln files recursively in `cwd`, ignoring .gitignore.
+--- Uses `rg` when available, PowerShell as fallback.
+---@param cwd string
+---@return string[]  sorted, normalized absolute paths
+function M.find_sln_files(cwd)
+    local norm = Util.normalize_path(cwd)
+    if not norm or not Util.is_dir(norm) then
+        return {}
+    end
+    local raw
+    if vim.fn.executable("rg") == 1 then
+        raw = vim.fn.system({ "rg", "--no-ignore", "--files", "--glob", "*.sln", norm })
+    else
+        local escaped = norm:gsub("'", "''")
+        raw = vim.fn.system(
+            "powershell -NoProfile -Command \""
+                .. "Get-ChildItem -Path '"
+                .. escaped
+                .. "' -Recurse -Filter '*.sln' | Select-Object -ExpandProperty FullName\""
+        )
+    end
+    if not raw or raw == "" then
+        return {}
+    end
+    local out = {}
+    local seen = {}
+    for line in (raw .. "\n"):gmatch("([^\r\n]+)") do
+        line = line:match("^%s*(.-)%s*$")
+        if line ~= "" then
+            local p = Util.normalize_path(line)
+            if p and not seen[p:lower()] then
+                seen[p:lower()] = true
+                out[#out + 1] = p
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
 return M

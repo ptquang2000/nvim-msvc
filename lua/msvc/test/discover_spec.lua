@@ -153,4 +153,145 @@ describe("msvc.discover", function()
         local r = Discover.discover_vcxproj_toolchain(vcxproj)
         assert.are.equal("v141", r.vcvars_ver)
     end)
+
+    -- ─── burn-media fixture (C#-only solution) ──────────────────────────────
+
+    it("parse_solution_projects returns empty for csharp-only sln", function()
+        local sln = Util.join_path(
+            vim.fn.getcwd(),
+            "tests/fixtures/burn-media/BurnMediaCli.sln"
+        )
+        local out = Discover.parse_solution_projects(sln)
+        assert.are.equal(0, #out)  -- only .csproj entries, none are .vcxproj
+    end)
+
+    it("discover_targets parses Any CPU platform from BurnMediaCli.sln", function()
+        local sln = Util.join_path(
+            vim.fn.getcwd(),
+            "tests/fixtures/burn-media/BurnMediaCli.sln"
+        )
+        local r = Discover.discover_targets(sln, nil)
+        local function has(t, v)
+            for _, x in ipairs(t) do
+                if x == v then return true end
+            end
+            return false
+        end
+        assert.is_true(has(r.configurations, "Debug"))
+        assert.is_true(has(r.configurations, "Release"))
+        assert.is_true(has(r.platforms, "Any CPU"))
+    end)
+
+    it("find_sln_files discovers BurnMediaCli.sln via rg stub", function()
+        local sln = Util.normalize_path(
+            Util.join_path(vim.fn.getcwd(), "tests/fixtures/burn-media/BurnMediaCli.sln")
+        )
+        local orig_executable = vim.fn.executable
+        local orig_system = vim.fn.system
+        vim.fn.executable = function(cmd) return cmd == "rg" and 1 or 0 end
+        vim.fn.system = function(_) return sln .. "\n" end
+        local burn_dir = Util.join_path(vim.fn.getcwd(), "tests/fixtures/burn-media")
+        local r = Discover.find_sln_files(burn_dir)
+        vim.fn.executable = orig_executable
+        vim.fn.system = orig_system
+        assert.are.equal(1, #r)
+        assert.are.equal(sln, r[1])
+    end)
+
+    -- ─── find_sln_files ─────────────────────────────────────────────────────
+
+    it("find_sln_files returns empty list for non-existent directory", function()
+        local r = Discover.find_sln_files("/nonexistent/path/xyz")
+        assert.are.same({}, r)
+    end)
+
+    it("find_sln_files uses rg when available and returns normalized paths", function()
+        local sln_path = Util.join_path(tmpdir, "Foo.sln")
+        write(sln_path, "")
+
+        local orig_executable = vim.fn.executable
+        local orig_system = vim.fn.system
+        vim.fn.executable = function(cmd) return cmd == "rg" and 1 or 0 end
+        local captured_cmd = nil
+        vim.fn.system = function(cmd)
+            captured_cmd = cmd
+            return sln_path .. "\n"
+        end
+
+        local r = Discover.find_sln_files(tmpdir)
+
+        vim.fn.executable = orig_executable
+        vim.fn.system = orig_system
+
+        assert.is_table(captured_cmd)
+        assert.are.equal("rg", captured_cmd[1])
+        assert.are.equal("--no-ignore", captured_cmd[2])
+        assert.are.equal("--files", captured_cmd[3])
+        assert.are.equal("--glob", captured_cmd[4])
+        assert.are.equal("*.sln", captured_cmd[5])
+        assert.are.equal(1, #r)
+        assert.are.equal(Util.normalize_path(sln_path), r[1])
+    end)
+
+    it("find_sln_files uses PowerShell when rg is not available", function()
+        local sln_path = Util.join_path(tmpdir, "Bar.sln")
+        write(sln_path, "")
+
+        local orig_executable = vim.fn.executable
+        local orig_system = vim.fn.system
+        vim.fn.executable = function(_) return 0 end
+        local captured_cmd = nil
+        vim.fn.system = function(cmd)
+            captured_cmd = cmd
+            return sln_path .. "\r\n"
+        end
+
+        local r = Discover.find_sln_files(tmpdir)
+
+        vim.fn.executable = orig_executable
+        vim.fn.system = orig_system
+
+        assert.is_string(captured_cmd)
+        assert.is_truthy(captured_cmd:find("powershell", 1, true))
+        assert.is_truthy(captured_cmd:find("Get%-ChildItem"))
+        assert.are.equal(1, #r)
+        assert.are.equal(Util.normalize_path(sln_path), r[1])
+    end)
+
+    it("find_sln_files deduplicates and sorts results", function()
+        local sln_a = Util.join_path(tmpdir, "aaa.sln")
+        local sln_b = Util.join_path(tmpdir, "bbb.sln")
+        write(sln_a, "")
+        write(sln_b, "")
+
+        local orig_executable = vim.fn.executable
+        local orig_system = vim.fn.system
+        vim.fn.executable = function(cmd) return cmd == "rg" and 1 or 0 end
+        vim.fn.system = function(_)
+            -- Return b before a, and duplicate b
+            return sln_b .. "\n" .. sln_a .. "\n" .. sln_b .. "\n"
+        end
+
+        local r = Discover.find_sln_files(tmpdir)
+
+        vim.fn.executable = orig_executable
+        vim.fn.system = orig_system
+
+        assert.are.equal(2, #r)
+        assert.is_true(r[1] < r[2], "results should be sorted")
+    end)
+
+    it("find_sln_files returns empty list when system returns nothing", function()
+        local orig_executable = vim.fn.executable
+        local orig_system = vim.fn.system
+        vim.fn.executable = function(cmd) return cmd == "rg" and 1 or 0 end
+        vim.fn.system = function(_) return "" end
+
+        local r = Discover.find_sln_files(tmpdir)
+
+        vim.fn.executable = orig_executable
+        vim.fn.system = orig_system
+
+        assert.are.same({}, r)
+    end)
 end)

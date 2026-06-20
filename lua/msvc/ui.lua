@@ -17,6 +17,9 @@ local ENT = {
     PENDING = "pending",
     SOLUTION = "solution",
     PROJECT = "project",
+    STAGED_HEADER = "staged_header",
+    UNSTAGED_HEADER = "unstaged_header",
+    SOLUTION_UNSTAGED = "solution_unstaged",
 }
 
 -- Module-level state — one msvc:// buffer at a time.
@@ -26,6 +29,8 @@ local _line_map = {}        -- 1-based line → entity table
 local _expanded_field = nil -- settings field name currently expanded, or nil
 local _pending = nil        -- { action, solution, project, project_name, file }
 local _source_file = nil    -- captured at open() for single-file compile
+local _mode = "normal"      -- "normal" | "add"
+local _discovered = {}      -- discovered-but-not-staged solution paths (add mode)
 
 local function get_setting_options(msvc, field)
     if field == "configuration" or field == "platform" then
@@ -99,34 +104,81 @@ local function build_entries(msvc)
     add("", { type = ENT.BLANK })
 
     add("# Solutions", { type = ENT.SECTION, name = "solutions" })
-    if #(msvc.solution_candidates or {}) == 0 then
-        add("  <no solutions — open a .sln buffer>", { type = ENT.BLANK })
-    else
-        for _, sln_path in ipairs(msvc.solution_candidates or {}) do
-            local is_active = msvc.solution
-                and msvc.solution:lower() == sln_path:lower()
-            local sln_marker = is_active and "* " or "  "
-            add(
-                sln_marker .. Util.basename(sln_path),
-                { type = ENT.SOLUTION, path = sln_path }
-            )
-            local projects = Discover.parse_solution_projects(sln_path)
-            for _, proj in ipairs(projects) do
-                local is_pinned = msvc.project
-                    and msvc.project:lower() == proj.path:lower()
-                local proj_marker = is_pinned and "  > " or "    "
+
+    if _mode == "add" then
+        add("  Staged", { type = ENT.STAGED_HEADER })
+        local staged = msvc.solutions or {}
+        if #staged == 0 then
+            add("  <none staged>", { type = ENT.BLANK })
+        else
+            for _, sln_path in ipairs(staged) do
+                local is_active = msvc.solution
+                    and msvc.solution:lower() == sln_path:lower()
+                local sln_marker = is_active and "* " or "  "
                 add(
-                    proj_marker .. proj.name,
-                    {
-                        type = ENT.PROJECT,
-                        solution = sln_path,
-                        name = proj.name,
-                        path = proj.path,
-                    }
+                    sln_marker .. Util.basename(sln_path),
+                    { type = ENT.SOLUTION, path = sln_path }
+                )
+                local projects = Discover.parse_solution_projects(sln_path)
+                for _, proj in ipairs(projects) do
+                    local is_pinned = msvc.project
+                        and msvc.project:lower() == proj.path:lower()
+                    local proj_marker = is_pinned and "  > " or "    "
+                    add(
+                        proj_marker .. proj.name,
+                        {
+                            type = ENT.PROJECT,
+                            solution = sln_path,
+                            name = proj.name,
+                            path = proj.path,
+                        }
+                    )
+                end
+            end
+        end
+        add("", { type = ENT.BLANK })
+        add("  Unstaged", { type = ENT.UNSTAGED_HEADER })
+        if #_discovered == 0 then
+            add("  <none found>", { type = ENT.BLANK })
+        else
+            for _, sln_path in ipairs(_discovered) do
+                add(
+                    "  " .. Util.basename(sln_path),
+                    { type = ENT.SOLUTION_UNSTAGED, path = sln_path }
                 )
             end
         end
+    else
+        if #(msvc.solutions or {}) == 0 then
+            add("  <no solutions — open a .sln buffer>", { type = ENT.BLANK })
+        else
+            for _, sln_path in ipairs(msvc.solutions or {}) do
+                local is_active = msvc.solution
+                    and msvc.solution:lower() == sln_path:lower()
+                local sln_marker = is_active and "* " or "  "
+                add(
+                    sln_marker .. Util.basename(sln_path),
+                    { type = ENT.SOLUTION, path = sln_path }
+                )
+                local projects = Discover.parse_solution_projects(sln_path)
+                for _, proj in ipairs(projects) do
+                    local is_pinned = msvc.project
+                        and msvc.project:lower() == proj.path:lower()
+                    local proj_marker = is_pinned and "  > " or "    "
+                    add(
+                        proj_marker .. proj.name,
+                        {
+                            type = ENT.PROJECT,
+                            solution = sln_path,
+                            name = proj.name,
+                            path = proj.path,
+                        }
+                    )
+                end
+            end
+        end
     end
+
     add("", { type = ENT.BLANK })
     add("  h? — keybinding reference", { type = ENT.BLANK })
 
@@ -232,6 +284,9 @@ local function setup_autocmds(msvc, buf)
             _line_map = {}
             _pending = nil
             _expanded_field = nil
+            _source_file = nil
+            _mode = "normal"
+            _discovered = {}
         end,
     })
 end
@@ -291,6 +346,46 @@ local function setup_keymaps(msvc, buf)
         _expanded_field = (_expanded_field == ent.field) and nil or ent.field
         render(msvc, buf)
     end)
+    map("<CR>", function()
+        local ent = entity_at_cursor()
+        if not ent then
+            return
+        end
+        if ent.type == ENT.SOLUTION then
+            msvc:set_solution(ent.path)
+            render(msvc, buf)
+        elseif ent.type == ENT.SOLUTION_UNSTAGED then
+            local norm = ent.path
+            local lower = norm:lower()
+            -- Stage it
+            local already = false
+            for _, c in ipairs(msvc.solutions) do
+                if c:lower() == lower then
+                    already = true
+                    break
+                end
+            end
+            if not already then
+                msvc.solutions[#msvc.solutions + 1] = norm
+                table.sort(msvc.solutions)
+            end
+            -- Remove from _discovered
+            local new_disc = {}
+            for _, p in ipairs(_discovered) do
+                if p:lower() ~= lower then
+                    new_disc[#new_disc + 1] = p
+                end
+            end
+            _discovered = new_disc
+            msvc:set_solution(norm)
+            render(msvc, buf)
+        elseif ent.type == ENT.PROJECT then
+            msvc:set_project(ent.path)
+            render(msvc, buf)
+        end
+        -- SECTION, BLANK, HEADER, SETTINGS_FIELD, STAGED_HEADER, UNSTAGED_HEADER,
+        -- SETTINGS_OPTION, PENDING: no-op
+    end)
     map("-", function()
         local ent = entity_at_cursor()
         if not ent then
@@ -309,6 +404,52 @@ local function setup_keymaps(msvc, buf)
             render(msvc, buf)
         elseif ent.type == ENT.PENDING then
             _pending = nil
+            render(msvc, buf)
+        elseif ent.type == ENT.SOLUTION then
+            local norm = ent.path
+            local lower = norm:lower()
+            -- Remove from staged solutions
+            local new_slns = {}
+            for _, p in ipairs(msvc.solutions or {}) do
+                if p:lower() ~= lower then
+                    new_slns[#new_slns + 1] = p
+                end
+            end
+            msvc.solutions = new_slns
+            -- Clear active if it was this one
+            if msvc.solution and msvc.solution:lower() == lower then
+                msvc.solution = nil
+                msvc.project = nil
+                msvc.solution_projects = {}
+            end
+            -- In add mode, move back to _discovered
+            if _mode == "add" then
+                _discovered[#_discovered + 1] = norm
+                table.sort(_discovered)
+            end
+            render(msvc, buf)
+        elseif ent.type == ENT.SOLUTION_UNSTAGED then
+            local norm = ent.path
+            local lower = norm:lower()
+            -- Stage it (add to solutions), remove from _discovered
+            local already = false
+            for _, c in ipairs(msvc.solutions) do
+                if c:lower() == lower then
+                    already = true
+                    break
+                end
+            end
+            if not already then
+                msvc.solutions[#msvc.solutions + 1] = norm
+                table.sort(msvc.solutions)
+            end
+            local new_disc = {}
+            for _, p in ipairs(_discovered) do
+                if p:lower() ~= lower then
+                    new_disc[#new_disc + 1] = p
+                end
+            end
+            _discovered = new_disc
             render(msvc, buf)
         end
     end)
@@ -331,11 +472,32 @@ local function setup_keymaps(msvc, buf)
     end)
 end
 
-function M.open(msvc)
+function M.open(msvc, mode, discovered)
+    mode = mode or "normal"
+
     -- Capture the calling buffer's path for single-file compile.
     -- Must happen before we switch windows.
     local calling_name = vim.api.nvim_buf_get_name(0)
     _source_file = (calling_name ~= "" and calling_name) or nil
+
+    -- Always update mode state, even when reusing an existing buffer.
+    _mode = mode
+    if mode == "add" then
+        local staged_lower = {}
+        for _, p in ipairs(msvc.solutions or {}) do
+            staged_lower[p:lower()] = true
+        end
+        _discovered = {}
+        for _, p in ipairs(discovered or {}) do
+            local np = Util.normalize_path(p) or p
+            if np and not staged_lower[np:lower()] then
+                _discovered[#_discovered + 1] = np
+            end
+        end
+        table.sort(_discovered)
+    else
+        _discovered = {}
+    end
 
     -- Reuse or create the msvc:// buffer.
     local buf = _buf
@@ -387,6 +549,32 @@ end
 M._set_pending = function(p)
     _pending = p
 end
+M._get_mode = function()
+    return _mode
+end
+M._set_mode = function(m)
+    _mode = m
+end
+M._get_discovered = function()
+    return _discovered
+end
+M._set_discovered = function(d)
+    _discovered = d
+end
+M._get_buf = function()
+    return _buf
+end
+M._set_buf = function(b)
+    _buf = b
+end
+M._get_line_map = function()
+    return _line_map
+end
+M._set_line_map = function(lm)
+    _line_map = lm
+end
+M._setup_keymaps = setup_keymaps
+M._render = render
 M._reset = function()
     _buf = nil
     _msvc = nil
@@ -394,6 +582,8 @@ M._reset = function()
     _expanded_field = nil
     _pending = nil
     _source_file = nil
+    _mode = "normal"
+    _discovered = {}
 end
 
 return M

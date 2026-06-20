@@ -159,7 +159,7 @@ describe("msvc.init — set_solution / set_project", function()
 
     it("set_solution matches by full path in candidates", function()
         local sln = "/fake/alpha.sln"
-        Msvc.solution_candidates = { sln }
+        Msvc.solutions = { sln }
         local ok = Msvc:set_solution(sln)
         assert.is_true(ok)
         assert.are.equal(sln, Msvc.solution)
@@ -167,7 +167,7 @@ describe("msvc.init — set_solution / set_project", function()
 
     it("set_solution case-insensitive match in candidates", function()
         local sln = "/Fake/Alpha.sln"
-        Msvc.solution_candidates = { sln }
+        Msvc.solutions = { sln }
         local ok = Msvc:set_solution("/fake/alpha.sln")
         assert.is_true(ok)
         assert.are.equal(sln, Msvc.solution)
@@ -175,14 +175,14 @@ describe("msvc.init — set_solution / set_project", function()
 
     it("set_solution matches candidate by basename", function()
         local sln = "/fake/myproject.sln"
-        Msvc.solution_candidates = { sln }
+        Msvc.solutions = { sln }
         local ok = Msvc:set_solution("myproject.sln")
         assert.is_true(ok)
         assert.are.equal(sln, Msvc.solution)
     end)
 
     it("set_solution returns false for path not in candidates and not on disk", function()
-        Msvc.solution_candidates = {}
+        Msvc.solutions = {}
         local ok = Msvc:set_solution("/nonexistent/path.sln")
         assert.is_false(ok)
         assert.is_nil(Msvc.solution)
@@ -191,7 +191,7 @@ describe("msvc.init — set_solution / set_project", function()
     it("set_solution saves context before switching", function()
         local sln_a = "/fake/a.sln"
         local sln_b = "/fake/b.sln"
-        Msvc.solution_candidates = { sln_a, sln_b }
+        Msvc.solutions = { sln_a, sln_b }
         Msvc.solution = sln_a
         Msvc.project = nil
         Msvc.settings.configuration = "Debug"
@@ -203,7 +203,7 @@ describe("msvc.init — set_solution / set_project", function()
 
     it("set_solution clears project when switching solutions", function()
         local sln = "/fake/s.sln"
-        Msvc.solution_candidates = { sln }
+        Msvc.solutions = { sln }
         Msvc.project = "/fake/P.vcxproj"
         Msvc:set_solution(sln)
         assert.is_nil(Msvc.project)
@@ -214,7 +214,7 @@ describe("msvc.init — set_solution / set_project", function()
         local fh = io.open(sln, "wb")
         fh:write("")
         fh:close()
-        Msvc.solution_candidates = {}
+        Msvc.solutions = {}
         local ok = Msvc:set_solution(sln)
         assert.is_true(ok)
         assert.are.equal(Util.normalize_path(sln), Msvc.solution)
@@ -299,7 +299,7 @@ describe("msvc.init — build dispatches with fixture solutions", function()
             pending("fixture files not found")
             return
         end
-        Msvc.solution_candidates = { sln }
+        Msvc.solutions = { sln }
         Msvc.solution = sln
         Msvc.solution_projects = require("msvc.discover").parse_solution_projects(sln)
         Msvc.project = proj

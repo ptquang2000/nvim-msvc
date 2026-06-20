@@ -1,0 +1,29 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+VisualStudioVersion = 16.0.33801.447
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BurnMediaCli", "BurnMediaCli.csproj", "{5020E09C-DC5D-459F-86C3-18A2C2B01F36}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BurnMediaCli.Tests", "BurnMediaCli.Tests\BurnMediaCli.Tests.csproj", "{F5F1048D-8B53-449F-8925-1587C1EA4314}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{5020E09C-DC5D-459F-86C3-18A2C2B01F36}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5020E09C-DC5D-459F-86C3-18A2C2B01F36}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5020E09C-DC5D-459F-86C3-18A2C2B01F36}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5020E09C-DC5D-459F-86C3-18A2C2B01F36}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F5F1048D-8B53-449F-8925-1587C1EA4314}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F5F1048D-8B53-449F-8925-1587C1EA4314}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {11B307BC-E26E-4D09-9C25-70B7AAC0E43C}
+	EndGlobalSection
+EndGlobal

@@ -8,7 +8,7 @@ local _complete = commands._complete
 local function make_msvc(sln_path)
     return {
         solution = sln_path or nil,
-        solution_candidates = sln_path and { sln_path } or {},
+        solutions = sln_path and { sln_path } or {},
         solution_projects = {},
         set_solution = function(self, path)
             self.solution = path
@@ -16,10 +16,6 @@ local function make_msvc(sln_path)
         end,
     }
 end
-
--- Stubs injected by helpers.reset() equivalents:
--- vim.api.nvim_buf_get_name returns "" by default (no open buffer)
--- Util.is_file is the real filesystem check here (tests use fixture paths)
 
 local fixture_sln = Util.normalize_path(vim.fn.getcwd() .. "/tests/fixtures/sample.sln")
 
@@ -71,25 +67,25 @@ describe("SUBCOMMANDS.add.run", function()
         local msvc = make_msvc()
         SUBCOMMANDS.add.run(msvc, { fixture_sln })
         assert.are.equal(fixture_sln, msvc.solution)
-        assert.are.same({ fixture_sln }, msvc.solution_candidates)
+        assert.are.same({ fixture_sln }, msvc.solutions)
     end)
 
     it("does not duplicate when same sln added twice", function()
         local msvc = make_msvc()
         SUBCOMMANDS.add.run(msvc, { fixture_sln })
         SUBCOMMANDS.add.run(msvc, { fixture_sln })
-        assert.are.equal(1, #msvc.solution_candidates)
+        assert.are.equal(1, #msvc.solutions)
     end)
 
-    it("appends to existing candidates and keeps sorted", function()
+    it("appends to existing solutions and keeps sorted", function()
         local sln_a = Util.normalize_path(vim.fn.getcwd() .. "/tests/fixtures/sol-a/alpha.sln")
         local sln_b = Util.normalize_path(vim.fn.getcwd() .. "/tests/fixtures/sol-b/filter.sln")
         local msvc = make_msvc()
         -- add in reverse order; result must still be sorted
         SUBCOMMANDS.add.run(msvc, { sln_b })
         SUBCOMMANDS.add.run(msvc, { sln_a })
-        assert.are.equal(2, #msvc.solution_candidates)
-        assert.is_truthy(msvc.solution_candidates[1] < msvc.solution_candidates[2])
+        assert.are.equal(2, #msvc.solutions)
+        assert.is_truthy(msvc.solutions[1] < msvc.solutions[2])
     end)
 
     it("errors when path does not end in .sln", function()
@@ -99,18 +95,16 @@ describe("SUBCOMMANDS.add.run", function()
         vim.notify = function(msg, _) logged[#logged + 1] = msg end
         SUBCOMMANDS.add.run(msvc, { "/some/file.txt" })
         vim.notify = orig
-        -- solution_candidates unchanged
-        assert.are.equal(0, #msvc.solution_candidates)
+        assert.are.equal(0, #msvc.solutions)
     end)
 
     it("errors when file does not exist", function()
         local msvc = make_msvc()
         SUBCOMMANDS.add.run(msvc, { "/nonexistent/path.sln" })
-        assert.are.equal(0, #msvc.solution_candidates)
+        assert.are.equal(0, #msvc.solutions)
     end)
 
-    it("uses current buffer name when no path given", function()
-        -- Stub nvim_buf_get_name to return fixture path
+    it("uses current buffer name when no path given and buffer is .sln", function()
         local orig = vim.api.nvim_buf_get_name
         vim.api.nvim_buf_get_name = function(_) return fixture_sln end
         local msvc = make_msvc()
@@ -119,12 +113,21 @@ describe("SUBCOMMANDS.add.run", function()
         assert.are.equal(fixture_sln, msvc.solution)
     end)
 
-    it("errors when current buffer has no name and no path given", function()
-        local orig = vim.api.nvim_buf_get_name
+    it("triggers discovery mode when no sln path is available", function()
+        local orig_bufname = vim.api.nvim_buf_get_name
         vim.api.nvim_buf_get_name = function(_) return "" end
+        local Discover = require("msvc.discover")
+        local orig_find = Discover.find_sln_files
+        local find_called = false
+        Discover.find_sln_files = function(_)
+            find_called = true
+            return {}
+        end
         local msvc = make_msvc()
         SUBCOMMANDS.add.run(msvc, {})
-        vim.api.nvim_buf_get_name = orig
-        assert.are.equal(0, #msvc.solution_candidates)
+        vim.api.nvim_buf_get_name = orig_bufname
+        Discover.find_sln_files = orig_find
+        assert.is_true(find_called)
+        assert.are.equal(0, #msvc.solutions)
     end)
 end)
