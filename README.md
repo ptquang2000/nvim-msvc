@@ -1,18 +1,20 @@
 # nvim-msvc
 
-A **Windows-only** Neovim plugin that wraps `MSBuild.exe` and the Visual
-Studio developer environment (`vswhere.exe`, `vcvarsall.bat`) into a
-small, async, build/cancel/quickfix workflow modelled after
-[harpoon2](https://github.com/ThePrimeagen/harpoon/tree/harpoon2).
+A **Windows-only** Neovim plugin that wraps `MSBuild.exe` and the Visual Studio developer
+environment (`vswhere.exe`, `vcvarsall.bat`) into a buffer-driven build workflow modelled
+after [harpoon2](https://github.com/ThePrimeagen/harpoon/tree/harpoon2).
+
+All build configuration and dispatch happen in a single interactive `msvc://` buffer.
+There are no subcommands to memorise beyond opening it.
 
 ## Requirements
 
 - **Windows**, **Neovim ≥ 0.10** (uses `vim.system`).
-- **Visual Studio 2017+** with the **Desktop development with C++**
-  workload (so `vcvarsall.bat`, `MSBuild.exe`, `cl.exe`, `link.exe` exist).
+- **Visual Studio 2017+** with the **Desktop development with C++** workload
+  (`vcvarsall.bat`, `MSBuild.exe`, `cl.exe`, `link.exe`).
 - `vswhere.exe` (ships with VS 2017 Update 2+).
 - *Optional:* [`msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
-  on `PATH` to auto-generate `compile_commands.json` after each build.
+  on `PATH` — auto-generates `compile_commands.json` on solution selection.
 
 ## Installation
 
@@ -22,20 +24,14 @@ small, async, build/cancel/quickfix workflow modelled after
 {
     "ptquang2000/nvim-msvc",
     cond = function() return vim.fn.has("win32") == 1 end,
-    cmd = "Msvc",
     config = function()
         require("msvc").setup({
             settings = {
-                default_profile = "release",
+                compile_commands = { outdir = "bin", builddir = "bin/cmake" },
             },
-            default = {
-                msbuild_args = { "/nologo", "/v:minimal" },
-                jobs = 6,
-                compile_commands = { builddir = "bin/cmake", outdir = "bin" },
-            },
-            profiles = {
-                release = { configuration = "Release", platform = "x64" },
-                debug   = { configuration = "Debug",   platform = "x64" },
+            default_settings = {
+                arch = "x64",
+                jobs = 4,
             },
         })
     end,
@@ -44,59 +40,169 @@ small, async, build/cancel/quickfix workflow modelled after
 
 ## Configuration
 
-The schema mirrors harpoon2's `default + entries` pattern. Three top-level
-keys:
+Two top-level keys:
 
-| Key        | Purpose                                                                                |
-|------------|----------------------------------------------------------------------------------------|
-| `settings` | Plugin-wide knobs: `default_profile`, `log_level`, `build_on_save`                     |
-| `default`  | Profile fields merged under **every** named profile                                    |
-| `profiles` | Map of profile name → profile fields. `configuration` and `platform` are **required**  |
+| Key               | Purpose                                             |
+|-------------------|-----------------------------------------------------|
+| `settings`        | Plugin-wide knobs (vswhere, compile_commands, etc.) |
+| `default_settings`| Starting values for each new (solution, project) context |
 
-### Profile fields
+### `settings`
 
-Every field is optional except `configuration` and `platform`. They are
-shallow-merged in this order: **named profile** → **`default`**.
+| Field              | Type      | Default    | Notes                                         |
+|--------------------|-----------|------------|-----------------------------------------------|
+| `vswhere_path`     | string    | nil        | Explicit path to `vswhere.exe`                |
+| `vs_requires`      | string[]  | `{}`       | Extra `-requires` components for vswhere      |
+| `log_level`        | string    | `"info"`   | `"trace"` / `"debug"` / `"info"` / `"warn"` / `"error"` |
+| `compile_commands` | table     | see below  | Settings for `compile_commands.json` generation |
 
-| Field              | Type      | Notes                                                                |
-|--------------------|-----------|----------------------------------------------------------------------|
-| `configuration`    | string    | `Debug` / `Release` / ... (auto-completed from `.sln` / `.vcxproj`)  |
-| `platform`         | string    | `Win32` / `x64` / `ARM64` (auto-completed from `.sln` / `.vcxproj`)  |
-| `arch`             | string    | `x86` / `x64` / `arm` / `arm64`. Toolchain arch passed to vcvarsall  |
-| `msbuild_args`     | string[]  | Extra MSBuild flags, verbatim (e.g. `{ "/nologo", "/v:minimal" }`)   |
-| `jobs`             | integer   | Translated to MSBuild `/m:<n>`                                       |
-| `target`           | string    | Default MSBuild `/t:<name>`. Overridden by `:Msvc build [target]`    |
-| `vs_version`       | string    | `latest` / `2017` / `2019` / `2022` / `17` / `17.10` / `[a,b]` range |
-| `vs_prerelease`    | boolean   | Include prerelease installs in vswhere lookup                        |
-| `vs_products`      | string[]  | vswhere `-products`                                                  |
-| `vs_requires`      | string[]  | vswhere `-requires`                                                  |
-| `vswhere_path`     | string    | Explicit `vswhere.exe` path                                          |
-| `vcvars_ver`       | string    | Pin MSVC toolset (e.g. `14.16`). Auto-completed from VC\Tools\MSVC   |
-| `winsdk`           | string    | Pin Windows SDK (e.g. `10.0.17763.0`). Auto-completed from registry  |
-| `compile_commands` | table     | `{ enabled, builddir, outdir, merge, deduplicate, extra_args }`      |
+**`compile_commands` sub-fields:**
+
+| Field          | Type     | Default       | Notes                                         |
+|----------------|----------|---------------|-----------------------------------------------|
+| `enabled`      | boolean  | `true`        | Enable/disable generation                     |
+| `builddir`     | string   | `"bin/cmake"` | `--build-dir` passed to the extractor         |
+| `outdir`       | string   | `"bin"`       | Output directory for `compile_commands.json`  |
+| `merge`        | boolean  | `true`        | Merge with an existing file                   |
+| `deduplicate`  | boolean  | `true`        | Remove duplicate entries                      |
+| `extra_args`   | string[] | `{}`          | Additional extractor arguments                |
+
+### `default_settings`
+
+Starting values for every new `(solution, project)` context. All fields are
+overridable per-context from the `msvc://` buffer.
+
+| Field           | Type    | Default    | Notes                                              |
+|-----------------|---------|------------|----------------------------------------------------|
+| `configuration` | string  | nil        | e.g. `"Debug"` / `"Release"`                       |
+| `platform`      | string  | nil        | e.g. `"x64"` / `"Win32"` / `"ARM64"`              |
+| `arch`          | string  | `"x64"`    | Toolchain arch for `vcvarsall.bat`                 |
+| `vs_version`    | string  | `"latest"` | `"latest"` / `"2019"` / `"2022"` / version range  |
+| `jobs`          | integer | `6`        | Parallel MSBuild jobs (`/m:<n>`)                   |
 
 ## Subcommands
 
+| Command            | Description                                            |
+|--------------------|--------------------------------------------------------|
+| `:Msvc`            | Open the `msvc://` buffer (discovery if no solutions registered) |
+| `:Msvc add [path]` | Register a `.sln` file; no path opens discovery mode   |
+| `:Msvc cancel`     | Cancel the in-flight build                             |
+| `:Msvc log`        | Open the live build-log buffer                         |
+
+`:Msvc` with no solutions registered behaves identically to `:Msvc add` — it opens
+discovery mode automatically.
+
+## msvc:// buffer
+
+### Normal mode
+
+The buffer shows the active solution, current build target, all editable settings,
+and the project list for the active solution.
+
 ```
-:Msvc                       same as :Msvc help
-:Msvc help                  list subcommands
-:Msvc status                show solution/project/profile/install
-:Msvc build [context]       run MSBuild (context switches solution/project before building)
-:Msvc rebuild               MSBuild /t:Rebuild
-:Msvc clean                 MSBuild /t:Clean
-:Msvc cancel                kill the in-flight build
-:Msvc profile [name]        switch active profile (no arg → list)
-:Msvc solution [path|-]     pick a .sln from discovered candidates ('-' clears)
-:Msvc project [path|-]      pin a .vcxproj as the build target ('-' clears)
-:Msvc update <field> <val>  override a profile field for this session
-:Msvc log                   open the live build-log buffer
+Solution: /path/to/Active.sln
+Target: build
+Help: h?
+
+  configuration  Debug
+  platform       x64
+  arch           x64
+  vs_version     latest
+  jobs           4
+
+────────────────────────────────
+
+  ProjectA
+* ProjectB
+  ProjectC
 ```
 
-`:Msvc update <field>` and `:Msvc profile <name>` autocomplete from
-`vswhere`, the filesystem, and the active solution/project.
+**Keybindings:**
+
+| Key  | Action                                                          |
+|------|-----------------------------------------------------------------|
+| `b`  | Set target to `build`                                           |
+| `c`  | Set target to `clean`                                           |
+| `r`  | Set target to `rebuild`                                         |
+| `f`  | Set target to `compile_file` (requires a pinned project)        |
+| `=`  | Expand field options; collapse if cursor is on an option line   |
+| `-`  | On a project line: select / deselect. On an option: apply value |
+| `:w` | Fire the current target against `(solution, project)`           |
+| `l`  | Open log buffer                                                 |
+| `x`  | Cancel in-flight build                                          |
+| `h?` | Open `msvc-help://` keybinding reference                        |
+| `q`  | Close buffer                                                    |
+
+`b` / `c` / `r` / `f` work from any cursor position. When a project is selected (`*`),
+`:w` builds that project alone; otherwise it builds the full solution.
+
+Pressing `=` on a settings field expands the known values inline. Options for
+`configuration` and `platform` are parsed from the active `.sln`; `arch` uses a
+fixed list; `vs_version` queries vswhere. Press `-` on an option to apply it.
+
+### Add mode
+
+Opened automatically when no solutions are registered, or explicitly via `:Msvc add`
+with no argument.
+
+```
+Solution: /path/to/LastStaged.sln
+Help: h?
+
+────────────────────────────────
+
+  Staged
+    * MySolution.sln
+      OtherSolution.sln
+
+  Unstaged
+      Found.sln
+```
+
+**Keybindings:**
+
+| Key    | Line type    | Action                                               |
+|--------|--------------|------------------------------------------------------|
+| `<CR>` | Unstaged     | Stage + activate → switch to normal mode             |
+| `<CR>` | Staged       | Activate → switch to normal mode                     |
+| `-`    | Unstaged     | Stage (stay in add mode)                             |
+| `-`    | Staged       | Unstage; discards that solution's settings history   |
+| `:w`   | —            | Activate last staged → switch to normal mode         |
+| `=`    | Staged       | Toggle project list visibility                       |
+| `l`    | —            | Open log buffer                                      |
+| `x`    | —            | Cancel in-flight build                               |
+| `h?`   | —            | Open keybinding reference                            |
+| `q`    | —            | Close buffer                                         |
+
+The `Solution:` header always shows what `:w` will activate. `<CR>` and `:w`
+transition in-place to normal mode without closing the buffer.
+
+## Per-context settings
+
+Settings are stored per `(solution, project)` context key. Switching solution or
+project saves the current settings and restores the saved settings for the new
+context, or falls back to `default_settings` for a new context. Unstaging a
+solution discards its settings history.
+
+## Highlight groups
+
+All groups are defined with `default = true` so user overrides win.
+
+| Group                | Links to    | Applied to                         |
+|----------------------|-------------|------------------------------------|
+| `MsvcHeaderLabel`    | `Title`     | `Solution:` / `Target:` / `Help:`  |
+| `MsvcHeaderValue`    | `Directory` | Path, target value, `h?`           |
+| `MsvcField`          | `Identifier`| Settings field names               |
+| `MsvcValue`          | `Constant`  | Settings field values              |
+| `MsvcOption`         | `Comment`   | Non-selected expanded options      |
+| `MsvcOptionSelected` | `Statement` | Currently selected expanded option |
+| `MsvcProject`        | `Normal`    | Project names                      |
+| `MsvcProjectSelected`| `Special`   | `*` marker on the selected project |
+| `MsvcSeparator`      | `Comment`   | Separator line                     |
+| `MsvcStagedHeader`   | `Title`     | `Staged` subheader in add mode     |
+| `MsvcUnstagedHeader` | `Comment`   | `Unstaged` subheader in add mode   |
 
 ## Health
 
-`:checkhealth msvc` reports environment, configuration, vswhere /
-MSBuild discovery, current state, and the `compile_commands.json`
-extractor.
+`:checkhealth msvc` validates the environment: vswhere and MSBuild discovery,
+active configuration, and the `compile_commands.json` extractor.
