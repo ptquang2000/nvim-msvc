@@ -45,6 +45,28 @@ function M.find_vcxprojs(root, opts)
     return out
 end
 
+--- Scan a directory tree for `.sln` files. Bounded by `max_files`.
+function M.find_slns(root, opts)
+    opts = opts or {}
+    local max = opts.max_files or 100
+    local norm = Util.normalize_path(root)
+    if not norm or not Util.is_dir(norm) then
+        return {}
+    end
+    local matches = vim.fn.globpath(norm, "**/*.sln", true, true)
+    if type(matches) ~= "table" then
+        return {}
+    end
+    local out = {}
+    for _, p in ipairs(matches) do
+        out[#out + 1] = Util.normalize_path(p)
+        if #out >= max then
+            break
+        end
+    end
+    return out
+end
+
 --- Parse `.sln` body and yield `{ name = ..., path = absolute }` for every
 --- `Project(...) = "Name", "RelativePath", "{guid}"` line whose path ends
 --- in `.vcxproj`.

@@ -1,5 +1,10 @@
 -- msvc.compile_commands — drive `msbuild-extractor-sample` to produce a
--- compile_commands.json after a successful :Msvc build.
+-- compile_commands.json after a successful :Msvc build or solution selection.
+--
+-- Flow: collect the main solution + all .sln files found (recursively) under
+-- cc.builddir. Spawn up to `opts.jobs` extractor processes in parallel, each
+-- writing to a per-solution temp file. Once all finish, merge the temp files
+-- into the final compile_commands.json via Lua JSON decode/encode and clean up.
 
 local Util = require("msvc.util")
 local Log = require("msvc.log")
@@ -80,18 +85,18 @@ local function resolve_outpath(outdir, solution, project)
     return Util.join_path(dir, "compile_commands.json")
 end
 
-local function collect_builddir_vcxprojs(builddir, solution, project)
+--- Scan cc.builddir (relative to solution) recursively for .sln files.
+local function collect_builddir_slns(builddir, solution)
     if type(builddir) ~= "string" or builddir == "" then
         return {}
     end
-    local anchor = resolve_anchor(solution, project)
+    local anchor = resolve_anchor(solution, nil)
     local resolved = Util.resolve_path(builddir, anchor) or builddir
     local norm = Util.normalize_path(resolved) or resolved
     if not Util.is_dir(norm) then
-        -- cc_warn("builddir does not exist: %s", tostring(norm))
         return {}
     end
-    return Discover.find_vcxprojs(norm)
+    return Discover.find_slns(norm)
 end
 
 local function build_argv(opts)
@@ -99,10 +104,6 @@ local function build_argv(opts)
     if opts.solution and opts.solution ~= "" then
         argv[#argv + 1] = "--solution"
         argv[#argv + 1] = opts.solution
-    end
-    for _, p in ipairs(opts.projects or {}) do
-        argv[#argv + 1] = "--project"
-        argv[#argv + 1] = p
     end
     if opts.configuration and opts.configuration ~= "" then
         argv[#argv + 1] = "-c"
@@ -118,9 +119,6 @@ local function build_argv(opts)
     end
     argv[#argv + 1] = "-o"
     argv[#argv + 1] = opts.outpath
-    if opts.merge ~= false then
-        argv[#argv + 1] = "--merge"
-    end
     if opts.deduplicate ~= false then
         argv[#argv + 1] = "--deduplicate"
     end
@@ -130,50 +128,71 @@ local function build_argv(opts)
     return argv
 end
 
---- Generate compile_commands.json. Async; spawns the extractor under the
---- supplied dev-prompt env (required so MSBuildLocator finds MSBuild).
+--- Read all temp files, merge their compile_commands arrays into outpath.
+--- Deduplicates by `file` field when deduplicate is true.
+--- Cleans up temp files regardless of outcome.
+local function merge_temp_files(temp_paths, outpath, deduplicate)
+    local entries = {}
+    local seen = {}
+    for _, tmp in ipairs(temp_paths) do
+        local content = Util.read_file(tmp)
+        if content and content ~= "" then
+            local ok, decoded = pcall(vim.json.decode, content)
+            if ok and type(decoded) == "table" then
+                for _, entry in ipairs(decoded) do
+                    if type(entry) == "table" and type(entry.file) == "string" then
+                        local key = entry.file:lower()
+                        if not deduplicate or not seen[key] then
+                            seen[key] = true
+                            entries[#entries + 1] = entry
+                        end
+                    end
+                end
+            end
+        end
+        if vim.uv and vim.uv.fs_unlink then
+            pcall(vim.uv.fs_unlink, tmp)
+        end
+    end
+    local f = io.open(outpath, "w")
+    if not f then
+        return false, "cannot open " .. outpath .. " for writing"
+    end
+    f:write(vim.json.encode(entries))
+    f:close()
+    return true
+end
+
+--- Generate compile_commands.json. Spawns up to opts.jobs extractor processes
+--- in parallel (default: all solutions at once). Each writes to a temp file;
+--- on completion the temp files are merged into the final output.
 function M.generate(opts)
     opts = opts or {}
     local cc = opts.cc or {}
     if not M.is_enabled(cc) then
         return false
     end
-    local solution, project = opts.solution, opts.project
-    if (not solution or solution == "") and (not project or project == "") then
-        cc_warn("no solution / project to extract from")
+    local solution = opts.solution
+    if not solution or solution == "" then
+        cc_warn("no solution to extract from")
         return false
     end
 
-    local outpath = resolve_outpath(cc.outdir, solution, project)
+    local outpath = resolve_outpath(cc.outdir, solution, opts.project)
     if not outpath then
         cc_error("could not resolve output directory %q", tostring(cc.outdir))
         return false
     end
 
-    local projects = collect_builddir_vcxprojs(cc.builddir, solution, project)
-    local seen = {}
-    for _, p in ipairs(projects) do
-        seen[(Util.normalize_path(p) or p):lower()] = true
-    end
-    local function add_project(p)
-        if type(p) ~= "string" or p == "" then
-            return
-        end
-        if not p:lower():match("%.vcxproj$") then
-            return
-        end
-        local norm = Util.normalize_path(p) or p
+    local sub_slns = collect_builddir_slns(cc.builddir, solution)
+    local all_slns = { solution }
+    local seen_slns = { [(Util.normalize_path(solution) or solution):lower()] = true }
+    for _, s in ipairs(sub_slns) do
+        local norm = Util.normalize_path(s) or s
         local key = norm:lower()
-        if seen[key] then
-            return
-        end
-        seen[key] = true
-        projects[#projects + 1] = norm
-    end
-    add_project(project)
-    if type(opts.extra_projects) == "table" then
-        for _, p in ipairs(opts.extra_projects) do
-            add_project(p)
+        if not seen_slns[key] then
+            seen_slns[key] = true
+            all_slns[#all_slns + 1] = norm
         end
     end
 
@@ -189,55 +208,125 @@ function M.generate(opts)
         return false
     end
 
-    local argv = build_argv({
-        extractor = exe,
-        solution = solution,
-        projects = projects,
-        configuration = opts.configuration,
-        platform = opts.platform,
-        outpath = outpath,
-        merge = cc.merge,
-        deduplicate = cc.deduplicate,
-        extra_args = cc.extra_args,
-        vs_path = opts.vs_path,
-    })
-    cc_info("generating %s (%d project(s))", outpath, #projects)
-    cc_debug("argv = %s", vim.inspect(argv))
+    local n = #all_slns
+    local pool_size = (opts.jobs and opts.jobs > 0) and opts.jobs or n
+    cc_info(
+        "generating %s (%d solution(s), pool=%d)",
+        outpath,
+        n,
+        math.min(pool_size, n)
+    )
+
+    local outdir = Util.dirname(outpath)
+    local temp_paths = {}
+    for i = 1, n do
+        temp_paths[i] =
+            Util.join_path(outdir, "compile_commands." .. i .. ".tmp")
+    end
+
+    local on_done = opts.on_done
+    local completed = 0
+    local all_ok = true
+    local active = 0
+    local next_idx = 1
+
+    local function finish(success)
+        if success then
+            local ok, err =
+                merge_temp_files(temp_paths, outpath, cc.deduplicate ~= false)
+            if ok then
+                cc_info("wrote %s", outpath)
+            else
+                cc_error("merge failed: %s", tostring(err))
+                success = false
+            end
+        else
+            for _, tmp in ipairs(temp_paths) do
+                if vim.uv and vim.uv.fs_unlink then
+                    pcall(vim.uv.fs_unlink, tmp)
+                end
+            end
+        end
+        if type(on_done) == "function" then
+            pcall(on_done, success, outpath, nil)
+        end
+    end
+
+    local try_start  -- forward declaration for recursive reference
+    try_start = function()
+        while active < pool_size and next_idx <= n do
+            local i = next_idx
+            next_idx = next_idx + 1
+            active = active + 1
+            local sln = all_slns[i]
+            local tmp = temp_paths[i]
+            local argv = build_argv({
+                extractor = exe,
+                solution = sln,
+                configuration = opts.configuration,
+                platform = opts.platform,
+                outpath = tmp,
+                deduplicate = cc.deduplicate,
+                extra_args = cc.extra_args,
+                vs_path = opts.vs_path,
+            })
+            cc_debug("argv[%d/%d] = %s", i, n, vim.inspect(argv))
+            local ok_spawn, err = pcall(function()
+                vim.system(argv, { text = true }, function(res)
+                    vim.schedule(function()
+                        active = active - 1
+                        completed = completed + 1
+                        local ok = res and res.code == 0
+                        if not ok then
+                            all_ok = false
+                            cc_error(
+                                "[%d/%d] extractor exit %d for %s%s",
+                                i,
+                                n,
+                                res and res.code or -1,
+                                Util.basename(sln),
+                                (res and res.stderr and res.stderr ~= "")
+                                        and (": " .. res.stderr:gsub(
+                                            "%s+$",
+                                            ""
+                                        ))
+                                    or ""
+                            )
+                        end
+                        if completed == n then
+                            finish(all_ok)
+                        else
+                            try_start()
+                        end
+                    end)
+                end)
+            end)
+            if not ok_spawn then
+                cc_error(
+                    "spawn failed for %s: %s",
+                    Util.basename(sln),
+                    tostring(err)
+                )
+                -- defer counter update so we're outside the while loop
+                vim.schedule(function()
+                    active = active - 1
+                    completed = completed + 1
+                    all_ok = false
+                    if completed == n then
+                        finish(false)
+                    else
+                        try_start()
+                    end
+                end)
+            end
+        end
+    end
 
     if vim.uv and vim.uv.fs_unlink then
         pcall(vim.uv.fs_unlink, outpath)
     end
 
-    local on_done = opts.on_done
-    local sys_opts = { text = true }
-    if type(opts.env) == "table" and next(opts.env) ~= nil then
-        sys_opts.env = opts.env
-    end
-    local ok_spawn, err = pcall(function()
-        vim.system(argv, sys_opts, function(res)
-            vim.schedule(function()
-                local ok = res and res.code == 0
-                if ok then
-                    cc_info("wrote %s", outpath)
-                else
-                    cc_error(
-                        "extractor exit %d%s",
-                        res and res.code or -1,
-                        (res and res.stderr and res.stderr ~= "")
-                                and (": " .. res.stderr:gsub("%s+$", ""))
-                            or ""
-                    )
-                end
-                if type(on_done) == "function" then
-                    pcall(on_done, ok, outpath, res and res.code or nil)
-                end
-            end)
-        end)
-    end)
-    if not ok_spawn then
-        cc_error("spawn failed: %s", tostring(err))
-        return false
-    end
+    try_start()
     return true
 end
 
@@ -245,7 +334,8 @@ M._internal = {
     build_argv = build_argv,
     resolve_outpath = resolve_outpath,
     resolve_anchor = resolve_anchor,
-    collect_builddir_vcxprojs = collect_builddir_vcxprojs,
+    collect_builddir_slns = collect_builddir_slns,
+    merge_temp_files = merge_temp_files,
 }
 
 return M

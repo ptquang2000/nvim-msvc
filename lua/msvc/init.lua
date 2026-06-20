@@ -145,6 +145,15 @@ function Msvc:set_solution(path)
         or {}
     self.project = nil
     self:_load_context(new_solution, nil)
+
+    if new_solution then
+        local install = self:resolve_install()
+        self:_run_compile_commands(
+            self.settings,
+            install and install.installationPath
+        )
+    end
+
     return true
 end
 
@@ -274,32 +283,13 @@ function Msvc:_run_compile_commands(settings, install_path)
     if not CompileCommands.is_enabled(cc) then
         return
     end
-    local toolchain = {}
-    if self.project then
-        toolchain = Discover.discover_vcxproj_toolchain(self.project)
-    end
-    local env, err = DevEnv.resolve({
-        install = install_path,
-        arch = (settings and settings.arch) or "x64",
-        vcvars_ver = toolchain.vcvars_ver,
-        winsdk = toolchain.winsdk,
-    })
-    if err then
-        Log:build_append("compile_commands [WARN]: %s", err)
-        return
-    end
-    local extra_projects = {}
-    for _, entry in ipairs(self.solution_projects or {}) do
-        extra_projects[#extra_projects + 1] = entry.path
-    end
     CompileCommands.generate({
         solution = self.solution,
         project = self.project,
-        extra_projects = extra_projects,
         configuration = settings and settings.configuration,
         platform = settings and settings.platform,
+        jobs = settings and settings.jobs,
         cc = cc,
-        env = env,
         vs_path = install_path,
     })
 end
