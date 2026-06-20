@@ -33,7 +33,7 @@ describe("msvc.init — context store", function()
         assert.is_nil(Msvc.settings.platform)
         assert.are.equal("x64", Msvc.settings.arch)
         assert.are.equal("latest", Msvc.settings.vs_version)
-        assert.is_nil(Msvc.settings.jobs)
+        assert.are.equal(6, Msvc.settings.jobs)
     end)
 
     it("_save_context stores a flat settings snapshot", function()
@@ -118,6 +118,36 @@ describe("msvc.init — context store", function()
         assert.is_nil(Msvc.set_profile)
         assert.is_nil(Msvc.active_profile)
         assert.is_nil(Msvc.set_override)
+    end)
+
+    it("_discard_solution_context removes matching keys and leaves others", function()
+        local sln_a = Util.join_path(tmpdir, "A.sln")
+        local sln_b = Util.join_path(tmpdir, "B.sln")
+        local proj = Util.join_path(tmpdir, "P.vcxproj")
+        -- Populate _context_store with keys for both solutions
+        Msvc._context_store[sln_a .. "\0"] = { configuration = "Debug" }
+        Msvc._context_store[sln_a .. "\0" .. proj] = { configuration = "Release" }
+        Msvc._context_store[sln_b .. "\0"] = { configuration = "MinSizeRel" }
+        Msvc:_discard_solution_context(sln_a)
+        assert.is_nil(Msvc._context_store[sln_a .. "\0"])
+        assert.is_nil(Msvc._context_store[sln_a .. "\0" .. proj])
+        assert.are.equal("MinSizeRel", Msvc._context_store[sln_b .. "\0"].configuration)
+    end)
+
+    it("_discard_solution_context is case-insensitive on solution path", function()
+        local sln = Util.join_path(tmpdir, "MyApp.sln")
+        Msvc._context_store[sln .. "\0"] = { configuration = "Debug" }
+        Msvc:_discard_solution_context(sln:upper())
+        assert.is_nil(Msvc._context_store[sln .. "\0"])
+    end)
+
+    it("_discard_solution_context is a no-op for nil path", function()
+        local sln = Util.join_path(tmpdir, "A.sln")
+        Msvc._context_store[sln .. "\0"] = { configuration = "Debug" }
+        assert.has_no.errors(function()
+            Msvc:_discard_solution_context(nil)
+        end)
+        assert.are.equal("Debug", Msvc._context_store[sln .. "\0"].configuration)
     end)
 end)
 

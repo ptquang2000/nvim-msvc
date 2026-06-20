@@ -31,6 +31,7 @@ local Msvc = {
     _setup_called = false,
     _context_store = {},
     _last_build_key = nil,
+    _default_settings = nil,
 }
 
 local function log_warn(...)
@@ -52,9 +53,30 @@ function Msvc:_load_context(solution, project)
     if stored then
         self.settings = vim.deepcopy(stored)
     else
-        self.settings = vim.deepcopy(Config.DEFAULT_SETTINGS)
+        self.settings = vim.deepcopy(self._default_settings or Config.DEFAULT_SETTINGS)
     end
     self.install = nil
+end
+
+--- Discard all context-store entries whose solution component matches `path`
+--- (case-insensitive). Called when a solution is unstaged to prevent stale
+--- settings from silently re-applying if the solution is staged again.
+function Msvc:_discard_solution_context(path)
+    if not path then return end
+    local lower = path:lower()
+    local to_delete = {}
+    for key in pairs(self._context_store) do
+        local sep = key:find("\0", 1, true)
+        if sep then
+            local sln_part = key:sub(1, sep - 1)
+            if sln_part:lower() == lower then
+                to_delete[#to_delete + 1] = key
+            end
+        end
+    end
+    for _, key in ipairs(to_delete) do
+        self._context_store[key] = nil
+    end
 end
 
 --- Resolve a Visual Studio installation matching the active settings.
@@ -300,6 +322,7 @@ local function do_setup(self, user_config)
     self._setup_called = true
     self.config = Config.merge_config(user_config)
     Config.validate(self.config)
+    self._default_settings = self.config.default_settings
 
     Log:set_level(self.config.settings.log_level or "info")
     Log:install_live_tail()

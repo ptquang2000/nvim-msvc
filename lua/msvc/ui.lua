@@ -9,12 +9,14 @@ local M = {}
 local BUFNAME = "msvc://"
 
 local ENT = {
-    HEADER = "header",
     BLANK = "blank",
     SECTION = "section",
     SETTINGS_FIELD = "settings_field",
     SETTINGS_OPTION = "settings_option",
-    PENDING = "pending",
+    SOLUTION_HEADER = "solution_header",  -- Solution: <path>
+    TARGET_HEADER = "target_header",      -- Target: <value>
+    HELP_HEADER = "help_header",          -- Help: h?
+    SEPARATOR = "separator",
     SOLUTION = "solution",
     PROJECT = "project",
     STAGED_HEADER = "staged_header",
@@ -22,15 +24,28 @@ local ENT = {
     SOLUTION_UNSTAGED = "solution_unstaged",
 }
 
+local HL_NS = vim.api.nvim_create_namespace("MsvcUI")
+
 -- Module-level state — one msvc:// buffer at a time.
 local _buf = nil
 local _msvc = nil
 local _line_map = {}        -- 1-based line → entity table
 local _expanded_field = nil -- settings field name currently expanded, or nil
-local _pending = nil        -- { action, solution, project, project_name, file }
+local _target = "build"     -- "build" | "clean" | "rebuild" | "compile_file"
 local _source_file = nil    -- captured at open() for single-file compile
 local _mode = "normal"      -- "normal" | "add"
 local _discovered = {}      -- discovered-but-not-staged solution paths (add mode)
+
+local function reset()
+    _buf = nil
+    _msvc = nil
+    _line_map = {}
+    _expanded_field = nil
+    _target = "build"
+    _source_file = nil
+    _mode = "normal"
+    _discovered = {}
+end
 
 local function get_setting_options(msvc, field)
     if field == "configuration" or field == "platform" then
@@ -57,10 +72,13 @@ local function build_entries(msvc)
         entries[#entries + 1] = { text = text, entity = entity }
     end
 
-    add("msvc://", { type = ENT.HEADER })
+    -- Read-only header block
+    add("Solution: " .. (msvc.solution or "<none>"), { type = ENT.SOLUTION_HEADER })
+    add("Target: " .. _target, { type = ENT.TARGET_HEADER })
+    add("Help: h?", { type = ENT.HELP_HEADER })
     add("", { type = ENT.BLANK })
 
-    add("# Settings", { type = ENT.SECTION, name = "settings" })
+    -- Settings fields (no section heading)
     for _, field in ipairs(Config.SETTINGS_FIELDS) do
         local val = s[field]
         local val_str = (val ~= nil) and tostring(val) or "-"
@@ -83,27 +101,9 @@ local function build_entries(msvc)
     end
     add("", { type = ENT.BLANK })
 
-    add("# Pending", { type = ENT.SECTION, name = "pending" })
-    if _pending then
-        local p = _pending
-        local label
-        if p.action == "compile_file" then
-            label = "compile  " .. (p.file and Util.basename(p.file) or "<file>")
-        else
-            local sln_base = Util.basename(p.solution or "")
-            if p.project_name then
-                label = p.action .. "  " .. sln_base .. " | " .. p.project_name
-            else
-                label = p.action .. "  " .. sln_base
-            end
-        end
-        add("  " .. label, { type = ENT.PENDING })
-    else
-        add("  <none>", { type = ENT.PENDING })
-    end
+    -- Visual separator
+    add(string.rep("─", 40), { type = ENT.SEPARATOR })
     add("", { type = ENT.BLANK })
-
-    add("# Solutions", { type = ENT.SECTION, name = "solutions" })
 
     if _mode == "add" then
         add("  Staged", { type = ENT.STAGED_HEADER })
@@ -149,27 +149,26 @@ local function build_entries(msvc)
             end
         end
     else
-        if #(msvc.solutions or {}) == 0 then
-            add("  <no solutions — open a .sln buffer>", { type = ENT.BLANK })
+        -- Normal mode: show projects of the active solution
+        if not msvc.solution then
+            add(
+                "  <no solution — use add mode to register one>",
+                { type = ENT.BLANK }
+            )
         else
-            for _, sln_path in ipairs(msvc.solutions or {}) do
-                local is_active = msvc.solution
-                    and msvc.solution:lower() == sln_path:lower()
-                local sln_marker = is_active and "* " or "  "
-                add(
-                    sln_marker .. Util.basename(sln_path),
-                    { type = ENT.SOLUTION, path = sln_path }
-                )
-                local projects = Discover.parse_solution_projects(sln_path)
+            local projects = Discover.parse_solution_projects(msvc.solution)
+            if #projects == 0 then
+                add("  <no projects found>", { type = ENT.BLANK })
+            else
                 for _, proj in ipairs(projects) do
                     local is_pinned = msvc.project
                         and msvc.project:lower() == proj.path:lower()
-                    local proj_marker = is_pinned and "  > " or "    "
+                    local proj_marker = is_pinned and "* " or "  "
                     add(
                         proj_marker .. proj.name,
                         {
                             type = ENT.PROJECT,
-                            solution = sln_path,
+                            solution = msvc.solution,
                             name = proj.name,
                             path = proj.path,
                         }
@@ -179,10 +178,60 @@ local function build_entries(msvc)
         end
     end
 
-    add("", { type = ENT.BLANK })
-    add("  h? — keybinding reference", { type = ENT.BLANK })
-
     return entries
+end
+
+local function setup_highlights()
+    local groups = {
+        { "MsvcHeaderLabel",     "Title" },
+        { "MsvcHeaderValue",     "Directory" },
+        { "MsvcField",           "Identifier" },
+        { "MsvcValue",           "Constant" },
+        { "MsvcOption",          "Comment" },
+        { "MsvcOptionSelected",  "Statement" },
+        { "MsvcProject",         "Normal" },
+        { "MsvcProjectSelected", "Special" },
+        { "MsvcSeparator",       "Comment" },
+    }
+    for _, g in ipairs(groups) do
+        vim.api.nvim_set_hl(0, g[1], { link = g[2], default = true })
+    end
+end
+
+local function apply_highlights(buf, entries)
+    vim.api.nvim_buf_clear_namespace(buf, HL_NS, 0, -1)
+    for i, e in ipairs(entries) do
+        local ent = e.entity
+        local line = i - 1  -- 0-based line index
+        local t = ent.type
+        if t == ENT.SOLUTION_HEADER or t == ENT.TARGET_HEADER or t == ENT.HELP_HEADER then
+            -- "Label: value" — highlight label (including colon) and value separately.
+            -- find returns 1-based position of ":"; 0-based exclusive col_end = that position.
+            local colon = e.text:find(": ", 1, true)
+            if colon then
+                vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcHeaderLabel", line, 0, colon)
+                vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcHeaderValue", line, colon + 1, -1)
+            end
+        elseif t == ENT.SETTINGS_FIELD then
+            -- Format: marker(2) + "  "(2) + field(15 padded) + " "(1) + value
+            -- Field name: cols 4–18; value: col 20 onward.
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcField", line, 4, 19)
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcValue", line, 20, -1)
+        elseif t == ENT.SETTINGS_OPTION then
+            local is_selected = e.text:find("> ", 1, true) ~= nil
+            local hl = is_selected and "MsvcOptionSelected" or "MsvcOption"
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, hl, line, 0, -1)
+        elseif t == ENT.PROJECT then
+            if e.text:match("^%*") then
+                vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcProjectSelected", line, 0, 1)
+                vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcProject", line, 2, -1)
+            else
+                vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcProject", line, 0, -1)
+            end
+        elseif t == ENT.SEPARATOR then
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcSeparator", line, 0, -1)
+        end
+    end
 end
 
 local function render(msvc, buf)
@@ -197,6 +246,7 @@ local function render(msvc, buf)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
     vim.bo[buf].modified = false
+    apply_highlights(buf, entries)
 end
 
 local function entity_at_cursor()
@@ -207,58 +257,6 @@ local function entity_at_cursor()
     return _line_map[row]
 end
 
-local function stage(action, ent)
-    if ent.type == ENT.PROJECT then
-        _pending = {
-            action = action,
-            solution = ent.solution,
-            project = ent.path,
-            project_name = ent.name,
-        }
-        return true
-    elseif ent.type == ENT.SOLUTION then
-        _pending = {
-            action = action,
-            solution = ent.path,
-            project = nil,
-            project_name = nil,
-        }
-        return true
-    end
-    return false
-end
-
-local function fire_pending(msvc)
-    if not _pending then
-        Log:warn("msvc: nothing staged (press b/c/r/f on a project first)")
-        return false
-    end
-    local p = _pending
-    -- Switch context if needed
-    if p.solution ~= msvc.solution then
-        if not msvc:set_solution(p.solution) then
-            return false
-        end
-    end
-    if p.project ~= msvc.project then
-        if not msvc:set_project(p.project or "") then
-            return false
-        end
-    end
-    -- Dispatch
-    local ok
-    if p.action == "build" then
-        ok = msvc:build()
-    elseif p.action == "clean" then
-        ok = msvc:build("Clean")
-    elseif p.action == "rebuild" then
-        ok = msvc:build("Rebuild")
-    elseif p.action == "compile_file" then
-        ok = msvc:build_file(p.file)
-    end
-    return ok ~= false
-end
-
 local function setup_autocmds(msvc, buf)
     local group =
         vim.api.nvim_create_augroup("MsvcBuffer_" .. buf, { clear = true })
@@ -266,8 +264,17 @@ local function setup_autocmds(msvc, buf)
         group = group,
         buffer = buf,
         callback = function()
-            if fire_pending(msvc) then
-                _pending = nil
+            local ok
+            if _target == "build" then
+                ok = msvc:build()
+            elseif _target == "clean" then
+                ok = msvc:build("Clean")
+            elseif _target == "rebuild" then
+                ok = msvc:build("Rebuild")
+            elseif _target == "compile_file" then
+                ok = msvc:build_file(_source_file)
+            end
+            if ok ~= false then
                 if vim.api.nvim_buf_is_valid(buf) then
                     vim.api.nvim_buf_delete(buf, { force = true })
                 end
@@ -278,16 +285,7 @@ local function setup_autocmds(msvc, buf)
     vim.api.nvim_create_autocmd("BufUnload", {
         group = group,
         buffer = buf,
-        callback = function()
-            _buf = nil
-            _msvc = nil
-            _line_map = {}
-            _pending = nil
-            _expanded_field = nil
-            _source_file = nil
-            _mode = "normal"
-            _discovered = {}
-        end,
+        callback = reset,
     })
 end
 
@@ -299,27 +297,21 @@ local function setup_keymaps(msvc, buf)
     end
 
     map("b", function()
-        local ent = entity_at_cursor()
-        if ent and stage("build", ent) then
-            render(msvc, buf)
-        end
+        _target = "build"
+        render(msvc, buf)
     end)
     map("c", function()
-        local ent = entity_at_cursor()
-        if ent and stage("clean", ent) then
-            render(msvc, buf)
-        end
+        _target = "clean"
+        render(msvc, buf)
     end)
     map("r", function()
-        local ent = entity_at_cursor()
-        if ent and stage("rebuild", ent) then
-            render(msvc, buf)
-        end
+        _target = "rebuild"
+        render(msvc, buf)
     end)
     map("f", function()
         if not msvc.project then
             Log:warn(
-                "msvc: pin a project first before staging single-file compile"
+                "msvc: pin a project first before using compile_file"
             )
             return
         end
@@ -329,13 +321,7 @@ local function setup_keymaps(msvc, buf)
             )
             return
         end
-        _pending = {
-            action = "compile_file",
-            solution = msvc.solution,
-            project = msvc.project,
-            project_name = nil,
-            file = _source_file,
-        }
+        _target = "compile_file"
         render(msvc, buf)
     end)
     map("=", function()
@@ -351,13 +337,9 @@ local function setup_keymaps(msvc, buf)
         if not ent then
             return
         end
-        if ent.type == ENT.SOLUTION then
-            msvc:set_solution(ent.path)
-            render(msvc, buf)
-        elseif ent.type == ENT.SOLUTION_UNSTAGED then
+        if ent.type == ENT.SOLUTION_UNSTAGED then
             local norm = ent.path
             local lower = norm:lower()
-            -- Stage it
             local already = false
             for _, c in ipairs(msvc.solutions) do
                 if c:lower() == lower then
@@ -369,7 +351,6 @@ local function setup_keymaps(msvc, buf)
                 msvc.solutions[#msvc.solutions + 1] = norm
                 table.sort(msvc.solutions)
             end
-            -- Remove from _discovered
             local new_disc = {}
             for _, p in ipairs(_discovered) do
                 if p:lower() ~= lower then
@@ -379,12 +360,8 @@ local function setup_keymaps(msvc, buf)
             _discovered = new_disc
             msvc:set_solution(norm)
             render(msvc, buf)
-        elseif ent.type == ENT.PROJECT then
-            msvc:set_project(ent.path)
-            render(msvc, buf)
         end
-        -- SECTION, BLANK, HEADER, SETTINGS_FIELD, STAGED_HEADER, UNSTAGED_HEADER,
-        -- SETTINGS_OPTION, PENDING: no-op
+        -- All other entity types: no-op
     end)
     map("-", function()
         local ent = entity_at_cursor()
@@ -402,8 +379,12 @@ local function setup_keymaps(msvc, buf)
             end
             _expanded_field = nil
             render(msvc, buf)
-        elseif ent.type == ENT.PENDING then
-            _pending = nil
+        elseif ent.type == ENT.PROJECT then
+            if ent.path ~= msvc.project then
+                msvc:set_project(ent.path)
+            else
+                msvc:set_project("")
+            end
             render(msvc, buf)
         elseif ent.type == ENT.SOLUTION then
             local norm = ent.path
@@ -422,10 +403,11 @@ local function setup_keymaps(msvc, buf)
                 msvc.project = nil
                 msvc.solution_projects = {}
             end
-            -- In add mode, move back to _discovered
+            -- In add mode: move back to _discovered and discard context
             if _mode == "add" then
                 _discovered[#_discovered + 1] = norm
                 table.sort(_discovered)
+                msvc:_discard_solution_context(norm)
             end
             render(msvc, buf)
         elseif ent.type == ENT.SOLUTION_UNSTAGED then
@@ -474,6 +456,7 @@ end
 
 function M.open(msvc, mode, discovered)
     mode = mode or "normal"
+    setup_highlights()
 
     -- Capture the calling buffer's path for single-file compile.
     -- Must happen before we switch windows.
@@ -512,7 +495,6 @@ function M.open(msvc, mode, discovered)
         setup_keymaps(msvc, buf)
         _buf = buf
         _msvc = msvc
-        _pending = nil
         _expanded_field = nil
     end
 
@@ -543,11 +525,11 @@ end
 M._set_expanded_field = function(f)
     _expanded_field = f
 end
-M._get_pending = function()
-    return _pending
+M._get_target = function()
+    return _target
 end
-M._set_pending = function(p)
-    _pending = p
+M._set_target = function(t)
+    _target = t
 end
 M._get_mode = function()
     return _mode
@@ -575,15 +557,6 @@ M._set_line_map = function(lm)
 end
 M._setup_keymaps = setup_keymaps
 M._render = render
-M._reset = function()
-    _buf = nil
-    _msvc = nil
-    _line_map = {}
-    _expanded_field = nil
-    _pending = nil
-    _source_file = nil
-    _mode = "normal"
-    _discovered = {}
-end
+M._reset = reset
 
 return M

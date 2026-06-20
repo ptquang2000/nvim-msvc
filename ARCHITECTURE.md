@@ -50,7 +50,7 @@ indirection. There are no named profiles.
 | `platform`      | Parsed from `.sln` / `.vcxproj`          | Yes |
 | `arch`          | Fixed list (x86/x64/arm/arm64)           | Yes |
 | `vs_version`    | vswhere installations                    | Yes |
-| `jobs`          | Free number                              | Yes |
+| `jobs`          | Free number; default 6 (or `setup()` override) | Yes |
 | `winsdk`        | Auto from `<WindowsTargetPlatformVersion>` in `.vcxproj` | No (hidden) |
 | `vcvars_ver`    | Auto from `<PlatformToolset>` in `.vcxproj` | No (hidden) |
 
@@ -62,47 +62,48 @@ Plugin-level config (set once in `setup()`, never in the buffer):
 `:Msvc` with no arguments opens the interactive buffer. Its layout:
 
 ```
-msvc://
+Solution: /path/to/MySolution.sln   ← read-only label
+Target: build                       ← current build type; b/c/r/f to switch
+Help: h?                            ← read-only label
 
-Settings                    ← active context's flat settings
-  configuration  Debug
+  configuration  Debug              ← settings fields; = to expand options
   platform       x64
   arch           x64
   vs_version     latest
-  jobs           4
+  jobs           6
 
-Pending                     ← empty until an action key is pressed; `-` clears
-  [build] MySolution.sln > ProjectA
+────────────────────────────────    ← separator
 
-Solutions
-  MySolution.sln
-    ProjectA
-    ProjectB
-  OtherSolution.sln
-    ProjectC
+  ProjectA                          ← - to select / deselect
+* ProjectB                          ← selected project
+  ProjectC
 ```
 
 **Keybindings** (active only inside the `msvc://` buffer):
 
 | Key  | Action |
 |------|--------|
-| `b`  | Stage build for the solution/project under cursor |
-| `c`  | Stage clean |
-| `r`  | Stage rebuild |
-| `f`  | Stage single-file compile (file = buffer active when `msvc://` was opened) |
+| `b`  | Set target → `build` (works from any cursor position) |
+| `c`  | Set target → `clean` |
+| `r`  | Set target → `rebuild` |
+| `f`  | Set target → `compile_file` (requires a pinned project and a captured source file) |
 | `l`  | Open log buffer immediately |
 | `x`  | Cancel in-flight build immediately |
-| `=`  | Expand / collapse field options inline |
-| `-`  | Select highlighted option; clear Pending action when on that section |
-| `:w` | Confirm staged action, close buffer, open log |
+| `=`  | Expand / collapse settings field options inline |
+| `-`  | On project line: select or deselect as build scope; on settings option: apply value |
+| `:w` | Fire current target against active solution + selected project; close buffer; open log |
 | `h?` | Open the `msvc-help://` keybinding reference buffer |
+| `q`  | Close the buffer without firing |
 
-**Single-file compile (`f`):** requires a `.vcxproj` project to be selected (not just a
-solution). Dispatches MSBuild with `/t:ClCompile /p:SelectedFiles=<path>`. The file
-is the buffer that was active at the moment `:Msvc` was invoked — not the most-recently
-visited buffer at the time `f` is pressed. If no project is selected when `f` is pressed,
-the plugin emits a clear error rather than guessing which project owns the file (a source
-file can be included from multiple projects).
+**Target model:** `b`/`c`/`r`/`f` switch the `Target:` header value and are not
+cursor-sensitive. `:w` always fires against `(msvc.solution, msvc.project, _target)`.
+When no project is selected (`msvc.project == nil`), the build targets the full solution.
+
+**Project selection:** `-` on a project line selects it (calls `set_project`). `-` on the
+already-selected project clears it (calls `set_project("")`), reverting to full-solution scope.
+
+**Single-file compile (`f`):** requires a `.vcxproj` project to be selected and a source
+file captured at buffer-open time. Emits a clear error if either is missing.
 
 ## Build lifecycle
 

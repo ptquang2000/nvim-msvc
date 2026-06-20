@@ -11,7 +11,7 @@ M.DEFAULT_SETTINGS = {
     platform = nil,
     arch = "x64",
     vs_version = "latest",
-    jobs = nil,
+    jobs = 6,
 }
 
 local VALID_ARCH = { x86 = true, x64 = true, arm = true, arm64 = true }
@@ -46,8 +46,11 @@ local function copy_value(v)
     return out
 end
 
---- Merge user config over plugin defaults. Only the `settings` table is
---- recognized; `profiles` / `default` / `default_profile` are ignored.
+--- Merge user config over plugin defaults. The `settings` table and the
+--- optional `default_settings` table are recognised; `profiles` / `default`
+--- / `default_profile` keys are ignored.
+--- The returned config includes a `default_settings` key: a merge of
+--- DEFAULT_SETTINGS with any user-supplied `default_settings` overrides.
 function M.merge_config(user)
     local out = M.get_default_config()
     user = user or {}
@@ -67,6 +70,17 @@ function M.merge_config(user)
             end
         end
     end
+    -- Build default_settings: DEFAULT_SETTINGS overridden by user's default_settings.
+    local ds = {}
+    for k, v in pairs(M.DEFAULT_SETTINGS) do
+        ds[k] = copy_value(v)
+    end
+    if type(user.default_settings) == "table" then
+        for k, v in pairs(user.default_settings) do
+            ds[k] = copy_value(v)
+        end
+    end
+    out.default_settings = ds
     return out
 end
 
