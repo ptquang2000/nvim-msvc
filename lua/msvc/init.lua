@@ -13,21 +13,19 @@ local Util = require("msvc.util")
 local CompileCommands = require("msvc.compile_commands")
 
 ---@class Msvc
----@field config table             merged config (settings/default/profiles)
----@field solution string|nil      absolute path to active .sln (auto-discovered)
+---@field config table             merged config (settings layer only)
+---@field solution string|nil      absolute path to active .sln
 ---@field project string|nil       absolute path to pinned .vcxproj (optional)
----@field profile_name string|nil  active profile name
+---@field settings table           flat build-settings for the active context
 ---@field install table|nil        last-resolved vswhere installation record
----@field overrides table          per-session overrides keyed by profile field
 ---@field solution_projects table  cached `{ name=, path= }` from the active sln
----@field solution_candidates string[] paths of all `.sln` files reachable from cwd
+---@field solution_candidates string[] paths of all `.sln` files opened this session
 local Msvc = {
     config = Config.get_default_config(),
     solution = nil,
     project = nil,
-    profile_name = nil,
+    settings = vim.deepcopy(Config.DEFAULT_SETTINGS),
     install = nil,
-    overrides = {},
     solution_projects = {},
     solution_candidates = {},
     _setup_called = false,
@@ -45,38 +43,21 @@ end
 
 function Msvc:_save_context()
     local key = make_context_key(self.solution, self.project)
-    self._context_store[key] = {
-        profile_name = self.profile_name,
-        overrides = vim.deepcopy(self.overrides),
-    }
+    self._context_store[key] = vim.deepcopy(self.settings)
 end
 
 function Msvc:_load_context(solution, project)
     local key = make_context_key(solution, project)
     local stored = self._context_store[key]
     if stored then
-        self.profile_name = stored.profile_name
-        self.overrides = vim.deepcopy(stored.overrides)
+        self.settings = vim.deepcopy(stored)
     else
-        self.profile_name = self.config.settings.default_profile
-        self.overrides = {}
+        self.settings = vim.deepcopy(Config.DEFAULT_SETTINGS)
     end
     self.install = nil
 end
 
---- Return the active profile merged with any session-overrides.
-function Msvc:active_profile()
-    local prof = Config.get_profile(self.config, self.profile_name)
-    if not prof then
-        return nil
-    end
-    for k, v in pairs(self.overrides) do
-        prof[k] = v
-    end
-    return prof
-end
-
---- Resolve a Visual Studio installation matching the active profile.
+--- Resolve a Visual Studio installation matching the active settings.
 --- Synchronous (vswhere is fast); cached on `self.install`. Force a refresh
 --- by passing `{ refresh = true }`.
 function Msvc:resolve_install(opts)
@@ -84,42 +65,14 @@ function Msvc:resolve_install(opts)
     if self.install and not opts.refresh then
         return self.install
     end
-    local prof = self:active_profile() or {}
+    local s = self.settings or {}
+    local cfg = self.config.settings or {}
     self.install = VsWhere.find_latest({
-        vswhere_path = prof.vswhere_path,
-        vs_version = prof.vs_version,
-        vs_prerelease = prof.vs_prerelease,
-        vs_products = prof.vs_products,
-        vs_requires = prof.vs_requires,
+        vswhere_path = cfg.vswhere_path,
+        vs_version = s.vs_version,
+        vs_requires = cfg.vs_requires,
     })
     return self.install
-end
-
---- Set the active profile by name. Returns true on success.
-function Msvc:set_profile(name)
-    if not self.config.profiles[name] then
-        Log:error("msvc: unknown profile %q", tostring(name))
-        return false
-    end
-    self.profile_name = name
-    self.overrides = {}
-    self.install = nil
-    return true
-end
-
---- Set a per-session override on the active profile (e.g. flip platform
---- between Win32 and x64 for one build). Cleared by `:Msvc profile <name>`.
-function Msvc:set_override(field, value)
-    self.overrides[field] = value
-    if
-        field == "vs_version"
-        or field == "vs_prerelease"
-        or field == "vs_products"
-        or field == "vs_requires"
-        or field == "vswhere_path"
-    then
-        self.install = nil
-    end
 end
 
 --- Pin a .vcxproj as the build target. Accepts either a project name
@@ -153,10 +106,8 @@ function Msvc:set_project(path)
 end
 
 --- Select an active solution from the discovered candidate set, by
---- absolute path or basename. Pass nil / "" / "-" to clear. Switching
---- solutions clears any pinned project (it almost certainly belongs to
---- the previous solution) and refreshes `solution_projects` so the
---- `:Msvc project` completion list reflects the new sln.
+--- absolute path or basename. Pass nil / "" to clear. Switching
+--- solutions clears any pinned project and refreshes `solution_projects`.
 function Msvc:set_solution(path)
     local new_solution
     if path == nil or path == "" then
@@ -201,30 +152,32 @@ local function pick_target(self)
     return self.project or self.solution
 end
 
---- Run a build. `target_override` is the optional MSBuild `/t:` argument
---- (defaults to MSBuild's own default — Build for sln, Build for vcxproj).
+--- Run a build. `target_override` is the optional MSBuild `/t:` argument.
 function Msvc:build(target_override)
     local target_path = pick_target(self)
     if not target_path then
         Log:error(
-            "msvc: no .sln or .vcxproj selected (open a .sln buffer or use `:Msvc solution <path>`)"
+            "msvc: no .sln or .vcxproj selected (open a .sln buffer or use the msvc:// buffer)"
         )
         return false
     end
-    local prof = self:active_profile()
-    if not prof then
+    local s = self.settings or {}
+    if not s.configuration or s.configuration == "" then
         Log:error(
-            "msvc: no active profile (set `settings.default_profile` or call `:Msvc profile <name>`)"
+            "msvc: configuration is not set — open the msvc:// buffer and set it"
+        )
+        return false
+    end
+    if not s.platform or s.platform == "" then
+        Log:error(
+            "msvc: platform is not set — open the msvc:// buffer and set it"
         )
         return false
     end
 
     local install = self:resolve_install()
     if not install or not install.installationPath then
-        Log:error(
-            "msvc: failed to resolve a Visual Studio install for profile %q",
-            tostring(self.profile_name)
-        )
+        Log:error("msvc: failed to resolve a Visual Studio installation")
         return false
     end
     local install_path = install.installationPath
@@ -235,28 +188,13 @@ function Msvc:build(target_override)
         return false
     end
 
-    -- MSBuild self-bootstraps the per-project toolset from
-    -- <PlatformToolset>; it does NOT need vcvars sourced. Resolving
-    -- vcvars takes ~5s and would freeze the UI before the live log
-    -- can paint, so we leave `env = nil` here. The compile_commands
-    -- extractor (post-build, asynchronous) resolves vcvars on its
-    -- own when it actually needs MSBuildLocator.
-
-    local msbuild_args = prof.msbuild_args or {}
-    -- When the target is a bare .vcxproj, MSBuild resolves $(SolutionDir)
-    -- to the project directory by default — which breaks projects that
-    -- reference shared `$(SolutionDir)` paths (intermediate / output
-    -- dirs, NuGet packages, etc.). Pin it to the active solution dir.
+    -- When building a bare .vcxproj, pin SolutionDir to the active solution
+    -- directory (or the vcxproj directory) so $(SolutionDir) resolves correctly.
+    local solution_dir
     if target_path:lower():match("%.vcxproj$") then
         local sln_dir = self.solution and Util.dirname(self.solution)
             or Util.dirname(target_path)
-        sln_dir = Util.normalize_path(sln_dir)
-        local merged = {}
-        for _, a in ipairs(msbuild_args) do
-            merged[#merged + 1] = a
-        end
-        merged[#merged + 1] = "/p:SolutionDir=" .. sln_dir .. "\\"
-        msbuild_args = merged
+        solution_dir = Util.normalize_path(sln_dir)
     end
 
     local self_ref = self
@@ -264,16 +202,58 @@ function Msvc:build(target_override)
     return Build.spawn({
         msbuild = msbuild,
         target_path = target_path,
-        configuration = prof.configuration,
-        platform = prof.platform,
-        jobs = prof.jobs,
-        msbuild_args = msbuild_args,
-        target = target_override or prof.target,
+        configuration = s.configuration,
+        platform = s.platform,
+        jobs = s.jobs,
+        solution_dir = solution_dir,
+        target = target_override,
         on_done = function(ok)
             if ok then
-                self_ref:_run_compile_commands(prof, install_path)
+                self_ref:_run_compile_commands(s, install_path)
             end
         end,
+    })
+end
+
+--- Dispatch single-file compile via MSBuild ClCompile target.
+function Msvc:build_file(file_path)
+    if not self.project then
+        Log:error(
+            "msvc: single-file compile requires a pinned .vcxproj project"
+        )
+        return false
+    end
+    if not file_path or file_path == "" then
+        Log:error("msvc: no source file captured (was msvc:// opened from a source buffer?)")
+        return false
+    end
+    local s = self.settings or {}
+    if not s.configuration or not s.platform then
+        Log:error("msvc: configuration and platform must be set before building")
+        return false
+    end
+    local install = self:resolve_install()
+    if not install or not install.installationPath then
+        Log:error("msvc: failed to resolve a Visual Studio installation")
+        return false
+    end
+    local msbuild = DevEnv.find_msbuild(install.installationPath)
+    if not msbuild then
+        Log:error("msvc: MSBuild.exe not found")
+        return false
+    end
+    local sln_dir = self.solution and Util.dirname(self.solution)
+        or Util.dirname(self.project)
+    self._last_build_key = make_context_key(self.solution, self.project)
+    return Build.spawn({
+        msbuild = msbuild,
+        target_path = self.project,
+        configuration = s.configuration,
+        platform = s.platform,
+        jobs = s.jobs,
+        target = "ClCompile",
+        solution_dir = Util.normalize_path(sln_dir),
+        selected_files = file_path,
     })
 end
 
@@ -289,20 +269,20 @@ function Msvc:cancel()
     return Build.cancel()
 end
 
-function Msvc:_run_compile_commands(prof, install_path)
-    local cc = (prof and prof.compile_commands) or {}
+function Msvc:_run_compile_commands(settings, install_path)
+    local cc = (self.config.settings or {}).compile_commands or {}
     if not CompileCommands.is_enabled(cc) then
         return
     end
-    -- Resolve the dev-prompt env lazily here. The extractor's
-    -- MSBuildLocator needs INCLUDE / LIB / .NET probe paths; resolving
-    -- ~5s here is fine because it runs in the BUILD_DONE callback after
-    -- MSBuild already exited (the live log is fully painted).
+    local toolchain = {}
+    if self.project then
+        toolchain = Discover.discover_vcxproj_toolchain(self.project)
+    end
     local env, err = DevEnv.resolve({
         install = install_path,
-        arch = prof.arch or "x64",
-        vcvars_ver = prof.vcvars_ver,
-        winsdk = prof.winsdk,
+        arch = (settings and settings.arch) or "x64",
+        vcvars_ver = toolchain.vcvars_ver,
+        winsdk = toolchain.winsdk,
     })
     if err then
         Log:build_append("compile_commands [WARN]: %s", err)
@@ -316,8 +296,8 @@ function Msvc:_run_compile_commands(prof, install_path)
         solution = self.solution,
         project = self.project,
         extra_projects = extra_projects,
-        configuration = prof.configuration,
-        platform = prof.platform,
+        configuration = settings and settings.configuration,
+        platform = settings and settings.platform,
         cc = cc,
         env = env,
         vs_path = install_path,
@@ -333,10 +313,6 @@ local function do_setup(self, user_config)
 
     Log:set_level(self.config.settings.log_level or "info")
     Log:install_live_tail()
-
-    if self.config.settings.default_profile then
-        self.profile_name = self.config.settings.default_profile
-    end
 
     -- Startup: auto-select if exactly one .sln in cwd
     local cwd = vim.fn.getcwd()
@@ -381,16 +357,6 @@ local function do_setup(self, user_config)
             end
         end,
     })
-
-    if self.config.settings.build_on_save then
-        vim.api.nvim_create_autocmd("BufWritePost", {
-            group = group,
-            pattern = { "*.c", "*.cpp", "*.h", "*.hpp", "*.cxx", "*.cc" },
-            callback = function()
-                self:build()
-            end,
-        })
-    end
 
     require("msvc.commands").setup(self)
     Ext.extensions:emit(Ext.event_names.SETUP_CALLED, self)

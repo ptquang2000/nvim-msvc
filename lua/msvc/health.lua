@@ -45,27 +45,6 @@ local function check_config(msvc)
         ok("configuration validates")
     else
         err("configuration validation failed: " .. tostring(cfg_err))
-        return
-    end
-    local profiles = Config.list_profile_names(msvc.config)
-    if #profiles == 0 then
-        warn("no named profiles defined", {
-            "Add at least one entry under `profiles` in setup().",
-        })
-    else
-        info(
-            ("%d profile(s): %s"):format(
-                #profiles,
-                table.concat(profiles, ", ")
-            )
-        )
-    end
-    if msvc.profile_name then
-        ok("active profile: " .. msvc.profile_name)
-    else
-        warn("no active profile", {
-            "Set `settings.default_profile` or run `:Msvc profile <name>`.",
-        })
     end
 end
 
@@ -74,8 +53,8 @@ local function check_toolchain(msvc)
     if not Util.is_windows() then
         return
     end
-    local prof = msvc:active_profile() or {}
-    local exe = VsWhere.find_vswhere({ vswhere_path = prof.vswhere_path })
+    local cfg = (msvc.config or {}).settings or {}
+    local exe = VsWhere.find_vswhere({ vswhere_path = cfg.vswhere_path })
     if exe then
         ok("vswhere.exe: " .. exe)
     else
@@ -97,20 +76,21 @@ local function check_toolchain(msvc)
         end
     else
         warn("no Visual Studio installation resolved", {
-            "Set `vs_version` on the profile or default block.",
+            "Open the msvc:// buffer and set vs_version, or run :Msvc.",
         })
     end
 end
 
 local function check_state(msvc)
     start("nvim-msvc: state")
+    local s = msvc.settings or {}
     if msvc.solution and Util.is_file(msvc.solution) then
         ok("solution: " .. msvc.solution)
         info(("solution projects: %d"):format(#(msvc.solution_projects or {})))
     elseif msvc.solution then
         err("solution path no longer exists: " .. msvc.solution)
     else
-        warn("no .sln pinned", { "Open a .sln buffer or use `:Msvc solution <path>`." })
+        warn("no .sln selected", { "Open a .sln buffer or use :Msvc to open the build buffer." })
     end
     if msvc.project then
         if Util.is_file(msvc.project) then
@@ -119,16 +99,29 @@ local function check_state(msvc)
             err("pinned project missing: " .. msvc.project)
         end
     else
-        info("no pinned project — `:Msvc build` targets the .sln")
+        info("no pinned project — builds target the .sln")
+    end
+    if s.configuration and s.platform then
+        ok(
+            ("build settings: %s|%s (arch=%s, vs=%s)"):format(
+                s.configuration,
+                s.platform,
+                s.arch or "x64",
+                s.vs_version or "latest"
+            )
+        )
+    else
+        warn("configuration/platform not set", {
+            "Open :Msvc and set them with = then -.",
+        })
     end
 end
 
 local function check_compile_commands(msvc)
     start("nvim-msvc: compile_commands.json")
-    local prof = msvc:active_profile() or {}
-    local cc = prof.compile_commands
+    local cc = (msvc.config.settings or {}).compile_commands
     if not CompileCommands.is_enabled(cc) then
-        info("disabled (profile.compile_commands.enabled = false)")
+        info("disabled (settings.compile_commands.enabled = false)")
         return
     end
     CompileCommands.reset_cache()

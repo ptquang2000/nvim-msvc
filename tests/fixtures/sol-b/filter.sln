@@ -1,0 +1,40 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 16
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Alpha", "src\Alpha\Alpha.vcxproj", "{A1000000-0000-0000-0000-000000000001}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Beta", "src\Beta\Beta.vcxproj", "{B2000000-0000-0000-0000-000000000002}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Gamma", "src\Gamma\Gamma.vcxproj", "{C3000000-0000-0000-0000-000000000003}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Delta", "src\Delta\Delta.vcxproj", "{D4000000-0000-0000-0000-000000000004}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Epsilon", "src\Epsilon\Epsilon.vcxproj", "{E5000000-0000-0000-0000-000000000005}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		debug_static|Any CPU = debug_static|Any CPU
+		debug_static|ARM = debug_static|ARM
+		debug_static|ARM64 = debug_static|ARM64
+		debug_static|x64 = debug_static|x64
+		debug_static|x86 = debug_static|x86
+		Debug|Any CPU = Debug|Any CPU
+		Debug|ARM = Debug|ARM
+		Debug|ARM64 = Debug|ARM64
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
+		release_static|Any CPU = release_static|Any CPU
+		release_static|ARM = release_static|ARM
+		release_static|ARM64 = release_static|ARM64
+		release_static|x64 = release_static|x64
+		release_static|x86 = release_static|x86
+		Release|Any CPU = Release|Any CPU
+		Release|ARM = Release|ARM
+		Release|ARM64 = Release|ARM64
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

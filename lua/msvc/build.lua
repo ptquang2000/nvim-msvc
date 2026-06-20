@@ -27,8 +27,8 @@ end
 
 --- Construct argv for MSBuild given a build context.
 ---@param ctx { msbuild: string, target_path: string, configuration: string,
----             platform: string, jobs: integer|nil, msbuild_args: string[]|nil,
----             target: string|nil }
+---             platform: string, jobs: integer|nil, target: string|nil,
+---             solution_dir: string|nil, selected_files: string|nil }
 ---@return string[]
 local function build_argv(ctx)
     local argv = { ctx.msbuild, ctx.target_path }
@@ -42,8 +42,11 @@ local function build_argv(ctx)
     if ctx.target and ctx.target ~= "" then
         argv[#argv + 1] = "/t:" .. ctx.target
     end
-    for _, a in ipairs(ctx.msbuild_args or {}) do
-        argv[#argv + 1] = a
+    if ctx.solution_dir and ctx.solution_dir ~= "" then
+        argv[#argv + 1] = "/p:SolutionDir=" .. ctx.solution_dir .. "\\"
+    end
+    if ctx.selected_files and ctx.selected_files ~= "" then
+        argv[#argv + 1] = "/p:SelectedFiles=" .. ctx.selected_files
     end
     return argv
 end
@@ -67,8 +70,9 @@ end
 
 --- Spawn MSBuild for a given target.
 ---@param opts { msbuild: string, target_path: string, configuration: string,
----              platform: string, jobs: integer|nil, msbuild_args: string[]|nil,
----              target: string|nil, env: table|nil, on_done: fun(ok, code) }
+---              platform: string, jobs: integer|nil, target: string|nil,
+---              solution_dir: string|nil, selected_files: string|nil,
+---              env: table|nil, on_done: fun(ok, code) }
 function M.spawn(opts)
     if current_job then
         Log:warn("build: another build is in progress; cancel first")
@@ -134,9 +138,6 @@ function M.spawn(opts)
                 ),
                 open = true,
             })
-            -- if n > 0 then
-            --     Log:info("build: %d quickfix entries", n)
-            -- end
             Ext.extensions:emit(
                 Ext.event_names.BUILD_DONE,
                 success,

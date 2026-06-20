@@ -1,4 +1,4 @@
--- Tests for msvc.config: schema, merging, validation.
+-- Tests for msvc.config: flat settings schema, merge, validate.
 
 local helpers = require("msvc.test.utils")
 
@@ -10,137 +10,94 @@ describe("msvc.config", function()
         Config = require("msvc.config")
     end)
 
-    it("merges user settings over defaults", function()
+    it("SETTINGS_FIELDS contains the five context-level fields", function()
+        local fields = Config.SETTINGS_FIELDS
+        local required = { "configuration", "platform", "arch", "vs_version", "jobs" }
+        for _, f in ipairs(required) do
+            local found = false
+            for _, sf in ipairs(fields) do
+                if sf == f then
+                    found = true
+                    break
+                end
+            end
+            assert.is_true(found, "missing SETTINGS_FIELDS entry: " .. f)
+        end
+        assert.are.equal(#required, #fields)
+    end)
+
+    it("DEFAULT_SETTINGS has arch=x64 and vs_version=latest with nil config/platform", function()
+        local d = Config.DEFAULT_SETTINGS
+        assert.is_nil(d.configuration)
+        assert.is_nil(d.platform)
+        assert.are.equal("x64", d.arch)
+        assert.are.equal("latest", d.vs_version)
+        assert.is_nil(d.jobs)
+    end)
+
+    it("get_default_config has settings layer with compile_commands", function()
+        local cfg = Config.get_default_config()
+        assert.is_not_nil(cfg.settings)
+        assert.is_not_nil(cfg.settings.compile_commands)
+        assert.is_nil(cfg.profiles)
+        assert.is_nil(cfg.default)
+    end)
+
+    it("merge_config copies user settings over defaults", function()
         local cfg = Config.merge_config({
             settings = {
-                default_profile = "dbg",
-                build_on_save = true,
-            },
-            default = {
-                jobs = 4,
+                log_level = "debug",
                 compile_commands = { builddir = "out/cmake" },
             },
-            profiles = {
-                dbg = { configuration = "Debug", platform = "x64" },
-            },
         })
-        assert.are.equal("dbg", cfg.settings.default_profile)
-        assert.is_true(cfg.settings.build_on_save)
-        assert.are.equal("out/cmake", cfg.default.compile_commands.builddir)
-        -- defaults preserved when user overrides only one key
-        assert.are.equal("bin", cfg.default.compile_commands.outdir)
-        assert.are.equal(4, cfg.default.jobs)
+        assert.are.equal("debug", cfg.settings.log_level)
+        assert.are.equal("out/cmake", cfg.settings.compile_commands.builddir)
+        -- default sub-keys preserved
+        assert.are.equal("bin", cfg.settings.compile_commands.outdir)
     end)
 
-    it("get_profile shallow-merges default under named entry", function()
+    it("merge_config ignores unknown top-level keys (profiles, default)", function()
         local cfg = Config.merge_config({
-            default = { msbuild_args = { "/v:m" }, jobs = 6, arch = "x64" },
-            profiles = {
-                rel = { configuration = "Release", platform = "x64" },
-                arm = {
-                    configuration = "Release",
-                    platform = "ARM64",
-                    arch = "arm64",
-                },
-            },
+            profiles = { rel = { configuration = "Release", platform = "x64" } },
+            default = { arch = "arm64" },
         })
-        local rel = Config.get_profile(cfg, "rel")
-        assert.are.equal("Release", rel.configuration)
-        assert.are.equal("x64", rel.platform)
-        assert.are.equal(6, rel.jobs)
-        assert.are.equal("x64", rel.arch)
-        assert.are.same({ "/v:m" }, rel.msbuild_args)
-
-        local arm = Config.get_profile(cfg, "arm")
-        assert.are.equal("arm64", arm.arch) -- entry overrides default
-        assert.are.equal(6, arm.jobs) -- inherited
+        assert.is_nil(cfg.profiles)
+        assert.is_nil(cfg.default)
     end)
 
-    it("returns nil for missing profile name", function()
-        local cfg = Config.merge_config({ profiles = {} })
-        assert.is_nil(Config.get_profile(cfg, "nope"))
-        assert.is_nil(Config.get_profile(cfg, nil))
-    end)
-
-    it("validate accepts a well-formed config", function()
-        local cfg = Config.merge_config({
-            settings = { default_profile = "rel" },
-            profiles = {
-                rel = { configuration = "Release", platform = "Win32" },
-            },
-        })
+    it("validate accepts well-formed config", function()
+        local cfg = Config.merge_config({ settings = { log_level = "warn" } })
         assert.has_no.errors(function()
             Config.validate(cfg)
         end)
     end)
 
-    it("validate rejects unknown profile fields", function()
-        local cfg = Config.merge_config({
-            profiles = {
-                rel = {
-                    configuration = "Release",
-                    platform = "x64",
-                    garbage = 1,
-                },
-            },
-        })
+    it("validate accepts empty user config", function()
+        local cfg = Config.merge_config({})
+        assert.has_no.errors(function()
+            Config.validate(cfg)
+        end)
+    end)
+
+    it("validate rejects non-string log_level", function()
+        local cfg = Config.merge_config({})
+        cfg.settings.log_level = 42
         assert.has_error(function()
             Config.validate(cfg)
         end)
     end)
 
-    it("validate rejects unknown fields in `default`", function()
-        local cfg = Config.merge_config({
-            default = { unknown_field = true },
-            profiles = { rel = { configuration = "Release", platform = "x64" } },
-        })
+    it("validate rejects non-table vs_requires", function()
+        local cfg = Config.merge_config({})
+        cfg.settings.vs_requires = "bad"
         assert.has_error(function()
             Config.validate(cfg)
         end)
     end)
 
-    it("validate requires configuration + platform on each profile", function()
-        local cfg = Config.merge_config({
-            profiles = { broken = { configuration = "Release" } },
-        })
-        assert.has_error(function()
-            Config.validate(cfg)
-        end)
-    end)
-
-    it("validate rejects unknown default_profile name", function()
-        local cfg = Config.merge_config({
-            settings = { default_profile = "ghost" },
-            profiles = { rel = { configuration = "Release", platform = "x64" } },
-        })
-        assert.has_error(function()
-            Config.validate(cfg)
-        end)
-    end)
-
-    it("validate rejects invalid arch", function()
-        local cfg = Config.merge_config({
-            profiles = {
-                rel = {
-                    configuration = "Release",
-                    platform = "x64",
-                    arch = "bogus",
-                },
-            },
-        })
-        assert.has_error(function()
-            Config.validate(cfg)
-        end)
-    end)
-
-    it("list_profile_names returns sorted names", function()
-        local cfg = Config.merge_config({
-            profiles = {
-                z = { configuration = "Debug", platform = "x64" },
-                a = { configuration = "Debug", platform = "x64" },
-                m = { configuration = "Debug", platform = "x64" },
-            },
-        })
-        assert.are.same({ "a", "m", "z" }, Config.list_profile_names(cfg))
+    it("merge_config is idempotent on nil user arg", function()
+        local a = Config.merge_config(nil)
+        local b = Config.merge_config({})
+        assert.are.same(a, b)
     end)
 end)

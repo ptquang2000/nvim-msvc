@@ -166,4 +166,29 @@ function M.discover_targets(solution, project)
     return { configurations = cfgs, platforms = plats }
 end
 
+--- Parse `<WindowsTargetPlatformVersion>` and `<PlatformToolset>` from a
+--- `.vcxproj`. Returns `{ winsdk, vcvars_ver }` (either may be nil).
+--- Called by `ui.lua` for display and by `init.lua:build()` to resolve
+--- the hidden toolchain fields before spawning MSBuild.
+function M.discover_vcxproj_toolchain(vcxproj_path)
+    if not vcxproj_path or not Util.is_file(vcxproj_path) then
+        return {}
+    end
+    local body = Util.read_file(vcxproj_path)
+    if not body then
+        return {}
+    end
+    local winsdk =
+        body:match("<WindowsTargetPlatformVersion[^>]*>([^<]+)</WindowsTargetPlatformVersion>")
+    local toolset =
+        body:match("<PlatformToolset[^>]*>([^<]+)</PlatformToolset>")
+    if winsdk then
+        winsdk = winsdk:match("^%s*(.-)%s*$")
+    end
+    if toolset then
+        toolset = toolset:match("^%s*(.-)%s*$")
+    end
+    return { winsdk = winsdk, vcvars_ver = toolset }
+end
+
 return M

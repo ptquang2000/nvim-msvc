@@ -1,0 +1,419 @@
+-- Tests for msvc.init: context save/load with flat settings payload.
+
+local helpers = require("msvc.test.utils")
+
+describe("msvc.init — context store", function()
+    local Msvc, Config, Util
+    local tmpdir
+
+    before_each(function()
+        helpers.reset()
+        Msvc = require("msvc")
+        Config = require("msvc.config")
+        Util = require("msvc.util")
+        tmpdir = vim.fn.tempname()
+        vim.fn.mkdir(tmpdir, "p")
+    end)
+
+    after_each(function()
+        if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+            vim.fn.delete(tmpdir, "rf")
+        end
+    end)
+
+    local function write(path, body)
+        vim.fn.mkdir(Util.dirname(path), "p")
+        local fh = io.open(path, "wb")
+        fh:write(body or "")
+        fh:close()
+    end
+
+    it("settings initialises from DEFAULT_SETTINGS", function()
+        assert.is_nil(Msvc.settings.configuration)
+        assert.is_nil(Msvc.settings.platform)
+        assert.are.equal("x64", Msvc.settings.arch)
+        assert.are.equal("latest", Msvc.settings.vs_version)
+        assert.is_nil(Msvc.settings.jobs)
+    end)
+
+    it("_save_context stores a flat settings snapshot", function()
+        local sln = Util.join_path(tmpdir, "A.sln")
+        write(sln)
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.settings.configuration = "Debug"
+        Msvc.settings.platform = "x64"
+        Msvc.settings.jobs = 4
+        Msvc:_save_context()
+        local key = sln .. "\0"
+        local stored = Msvc._context_store[key]
+        assert.are.equal("Debug", stored.configuration)
+        assert.are.equal("x64", stored.platform)
+        assert.are.equal("x64", stored.arch)
+        assert.are.equal(4, stored.jobs)
+    end)
+
+    it("_save_context is independent for different context keys", function()
+        local sln = Util.join_path(tmpdir, "A.sln")
+        local proj = Util.join_path(tmpdir, "P.vcxproj")
+        write(sln)
+        write(proj)
+        -- Save context for (sln, nil)
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.settings.configuration = "Debug"
+        Msvc:_save_context()
+        -- Save context for (sln, proj)
+        Msvc.solution = sln
+        Msvc.project = proj
+        Msvc.settings.configuration = "Release"
+        Msvc:_save_context()
+        local key_sln = sln .. "\0"
+        local key_proj = sln .. "\0" .. proj
+        assert.are.equal("Debug", Msvc._context_store[key_sln].configuration)
+        assert.are.equal("Release", Msvc._context_store[key_proj].configuration)
+    end)
+
+    it("_load_context restores stored flat settings", function()
+        local sln = Util.join_path(tmpdir, "B.sln")
+        write(sln)
+        local key = sln .. "\0"
+        Msvc._context_store[key] = {
+            configuration = "Release",
+            platform = "Win32",
+            arch = "x64",
+            vs_version = "2022",
+            jobs = 8,
+        }
+        Msvc:_load_context(sln, nil)
+        assert.are.equal("Release", Msvc.settings.configuration)
+        assert.are.equal("Win32", Msvc.settings.platform)
+        assert.are.equal("2022", Msvc.settings.vs_version)
+        assert.are.equal(8, Msvc.settings.jobs)
+    end)
+
+    it("_load_context falls back to DEFAULT_SETTINGS for unknown context", function()
+        Msvc.settings.configuration = "Release"
+        Msvc.settings.platform = "ARM64"
+        Msvc:_load_context("nonexistent.sln", nil)
+        assert.is_nil(Msvc.settings.configuration)
+        assert.is_nil(Msvc.settings.platform)
+        assert.are.equal("x64", Msvc.settings.arch)
+        assert.are.equal("latest", Msvc.settings.vs_version)
+    end)
+
+    it("_load_context deep-copies stored table (no aliasing)", function()
+        local sln = Util.join_path(tmpdir, "C.sln")
+        write(sln)
+        local key = sln .. "\0"
+        Msvc._context_store[key] = { configuration = "Debug", platform = "x64", arch = "x64", vs_version = "latest", jobs = nil }
+        Msvc:_load_context(sln, nil)
+        Msvc.settings.configuration = "Release"
+        assert.are.equal("Debug", Msvc._context_store[key].configuration)
+    end)
+
+    it("no profile_name, set_profile, active_profile, or overrides on singleton", function()
+        assert.is_nil(Msvc.profile_name)
+        assert.is_nil(Msvc.overrides)
+        assert.is_nil(Msvc.set_profile)
+        assert.is_nil(Msvc.active_profile)
+        assert.is_nil(Msvc.set_override)
+    end)
+end)
+
+describe("msvc.init — set_solution / set_project", function()
+    local Msvc, Util
+    local tmpdir
+
+    before_each(function()
+        helpers.reset()
+        Msvc = require("msvc")
+        Util = require("msvc.util")
+        tmpdir = vim.fn.tempname()
+        vim.fn.mkdir(tmpdir, "p")
+    end)
+
+    after_each(function()
+        if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+            vim.fn.delete(tmpdir, "rf")
+        end
+    end)
+
+    -- ─── set_solution ─────────────────────────────────────────────────────────
+
+    it("set_solution(nil) clears solution and returns true", function()
+        Msvc.solution = "/fake/s.sln"
+        Msvc.project = "/fake/p.vcxproj"
+        local ok = Msvc:set_solution(nil)
+        assert.is_true(ok)
+        assert.is_nil(Msvc.solution)
+        assert.is_nil(Msvc.project)
+    end)
+
+    it("set_solution('') clears solution and returns true", function()
+        Msvc.solution = "/fake/s.sln"
+        local ok = Msvc:set_solution("")
+        assert.is_true(ok)
+        assert.is_nil(Msvc.solution)
+    end)
+
+    it("set_solution matches by full path in candidates", function()
+        local sln = "/fake/alpha.sln"
+        Msvc.solution_candidates = { sln }
+        local ok = Msvc:set_solution(sln)
+        assert.is_true(ok)
+        assert.are.equal(sln, Msvc.solution)
+    end)
+
+    it("set_solution case-insensitive match in candidates", function()
+        local sln = "/Fake/Alpha.sln"
+        Msvc.solution_candidates = { sln }
+        local ok = Msvc:set_solution("/fake/alpha.sln")
+        assert.is_true(ok)
+        assert.are.equal(sln, Msvc.solution)
+    end)
+
+    it("set_solution matches candidate by basename", function()
+        local sln = "/fake/myproject.sln"
+        Msvc.solution_candidates = { sln }
+        local ok = Msvc:set_solution("myproject.sln")
+        assert.is_true(ok)
+        assert.are.equal(sln, Msvc.solution)
+    end)
+
+    it("set_solution returns false for path not in candidates and not on disk", function()
+        Msvc.solution_candidates = {}
+        local ok = Msvc:set_solution("/nonexistent/path.sln")
+        assert.is_false(ok)
+        assert.is_nil(Msvc.solution)
+    end)
+
+    it("set_solution saves context before switching", function()
+        local sln_a = "/fake/a.sln"
+        local sln_b = "/fake/b.sln"
+        Msvc.solution_candidates = { sln_a, sln_b }
+        Msvc.solution = sln_a
+        Msvc.project = nil
+        Msvc.settings.configuration = "Debug"
+        Msvc.settings.platform = "x64"
+        Msvc:set_solution(sln_b)
+        local key = sln_a .. "\0"
+        assert.are.equal("Debug", Msvc._context_store[key].configuration)
+    end)
+
+    it("set_solution clears project when switching solutions", function()
+        local sln = "/fake/s.sln"
+        Msvc.solution_candidates = { sln }
+        Msvc.project = "/fake/P.vcxproj"
+        Msvc:set_solution(sln)
+        assert.is_nil(Msvc.project)
+    end)
+
+    it("set_solution with real .sln file succeeds via direct path", function()
+        local sln = Util.join_path(tmpdir, "real.sln")
+        local fh = io.open(sln, "wb")
+        fh:write("")
+        fh:close()
+        Msvc.solution_candidates = {}
+        local ok = Msvc:set_solution(sln)
+        assert.is_true(ok)
+        assert.are.equal(Util.normalize_path(sln), Msvc.solution)
+    end)
+
+    -- ─── set_project ──────────────────────────────────────────────────────────
+
+    it("set_project(nil) clears project and returns true", function()
+        Msvc.project = "/fake/P.vcxproj"
+        local ok = Msvc:set_project(nil)
+        assert.is_true(ok)
+        assert.is_nil(Msvc.project)
+    end)
+
+    it("set_project('') clears project and returns true", function()
+        Msvc.project = "/fake/P.vcxproj"
+        local ok = Msvc:set_project("")
+        assert.is_true(ok)
+        assert.is_nil(Msvc.project)
+    end)
+
+    it("set_project matches by name in solution_projects (no filesystem check)", function()
+        local proj_path = "/fake/Alpha.vcxproj"
+        Msvc.solution_projects = { { name = "Alpha", path = proj_path } }
+        local ok = Msvc:set_project("Alpha")
+        assert.is_true(ok)
+        assert.are.equal(proj_path, Msvc.project)
+    end)
+
+    it("set_project returns false for path not in solution_projects and not on disk", function()
+        Msvc.solution_projects = {}
+        local ok = Msvc:set_project("/nonexistent/proj.vcxproj")
+        assert.is_false(ok)
+    end)
+
+    it("set_project saves context before switching", function()
+        local sln = "/fake/s.sln"
+        Msvc.solution = sln
+        Msvc.project = nil
+        Msvc.settings.configuration = "Debug"
+        Msvc.settings.platform = "Win32"
+        local proj_path = "/fake/Alpha.vcxproj"
+        Msvc.solution_projects = { { name = "Alpha", path = proj_path } }
+        Msvc:set_project("Alpha")
+        local key = sln .. "\0"
+        assert.are.equal("Debug", Msvc._context_store[key].configuration)
+    end)
+
+    it("set_project with real file path succeeds", function()
+        local proj = Util.join_path(tmpdir, "P.vcxproj")
+        local fh = io.open(proj, "wb")
+        fh:write("<Project/>")
+        fh:close()
+        Msvc.solution_projects = {}
+        local ok = Msvc:set_project(proj)
+        assert.is_true(ok)
+        assert.are.equal(Util.normalize_path(proj), Msvc.project)
+    end)
+end)
+
+describe("msvc.init — build dispatches with fixture solutions", function()
+    local Msvc, Config, Util, Build
+    local FIXTURES = "tests/fixtures"
+
+    before_each(function()
+        helpers.reset()
+        Msvc = require("msvc")
+        Config = require("msvc.config")
+        Util = require("msvc.util")
+        Build = require("msvc.build")
+    end)
+
+    local function fixture(rel)
+        return Util.normalize_path(Util.join_path(vim.fn.getcwd(), FIXTURES, rel))
+    end
+
+    -- Scenario: sol-b (filter-style) — Alpha project Debug|x64 with v141 toolset
+    it("build context for sol-b Alpha: Debug|x64, toolset v141", function()
+        local sln = fixture("sol-b/filter.sln")
+        local proj = fixture("sol-b/src/Alpha/Alpha.vcxproj")
+        if not Util.is_file(sln) or not Util.is_file(proj) then
+            pending("fixture files not found")
+            return
+        end
+        Msvc.solution_candidates = { sln }
+        Msvc.solution = sln
+        Msvc.solution_projects = require("msvc.discover").parse_solution_projects(sln)
+        Msvc.project = proj
+        Msvc.settings = { configuration = "Debug", platform = "x64", arch = "x64", vs_version = "latest", jobs = nil }
+        local Discover = require("msvc.discover")
+        local tc = Discover.discover_vcxproj_toolchain(proj)
+        assert.are.equal("v141", tc.vcvars_ver)
+        assert.are.equal("10.0", tc.winsdk)
+    end)
+
+    -- Scenario: sol-b Beta project release_static|x64 with v141 toolset
+    it("build context for sol-b Beta: release_static|x64, toolset v141", function()
+        local sln = fixture("sol-b/filter.sln")
+        local proj = fixture("sol-b/src/Beta/Beta.vcxproj")
+        if not Util.is_file(sln) or not Util.is_file(proj) then
+            pending("fixture files not found")
+            return
+        end
+        Msvc.solution = sln
+        Msvc.project = proj
+        Msvc.settings = { configuration = "release_static", platform = "x64", arch = "x64", vs_version = "latest", jobs = nil }
+        local Discover = require("msvc.discover")
+        local tc = Discover.discover_vcxproj_toolchain(proj)
+        assert.are.equal("v141", tc.vcvars_ver)
+    end)
+
+    -- Scenario: sol-a (owc-style) — full solution, Release|Any CPU
+    it("sol-a full-solution Release|Any CPU context parses from sln", function()
+        local sln = fixture("sol-a/alpha.sln")
+        if not Util.is_file(sln) then
+            pending("fixture files not found")
+            return
+        end
+        local Discover = require("msvc.discover")
+        local targets = Discover.discover_targets(sln, nil)
+        local has_any_cpu = false
+        for _, p in ipairs(targets.platforms) do
+            if p == "Any CPU" then
+                has_any_cpu = true
+            end
+        end
+        assert.is_true(has_any_cpu, "Release|Any CPU should be in sol-a platforms")
+        local has_release = false
+        for _, c in ipairs(targets.configurations) do
+            if c == "Release" then
+                has_release = true
+            end
+        end
+        assert.is_true(has_release)
+    end)
+
+    -- Scenario: sol-c (demand-style) — full solution, Release|Win32
+    it("sol-c full-solution Release|Win32 context parses from sln", function()
+        local sln = fixture("sol-c/demand.sln")
+        if not Util.is_file(sln) then
+            pending("fixture files not found")
+            return
+        end
+        local Discover = require("msvc.discover")
+        local targets = Discover.discover_targets(sln, nil)
+        local has_win32 = false
+        for _, p in ipairs(targets.platforms) do
+            if p == "Win32" then
+                has_win32 = true
+            end
+        end
+        assert.is_true(has_win32, "Win32 should be in sol-c platforms")
+        local has_release = false
+        for _, c in ipairs(targets.configurations) do
+            if c == "Release" then
+                has_release = true
+            end
+        end
+        assert.is_true(has_release)
+    end)
+
+    -- Project list parsing for all three fixtures
+    it("sol-a parses 3 projects", function()
+        local sln = fixture("sol-a/alpha.sln")
+        if not Util.is_file(sln) then
+            pending("fixture files not found")
+            return
+        end
+        local Discover = require("msvc.discover")
+        local projects = Discover.parse_solution_projects(sln)
+        assert.are.equal(3, #projects)
+        local names = {}
+        for _, p in ipairs(projects) do
+            names[p.name] = true
+        end
+        assert.is_true(names["Alpha"])
+        assert.is_true(names["Beta"])
+        assert.is_true(names["Gamma"])
+    end)
+
+    it("sol-b parses 5 projects", function()
+        local sln = fixture("sol-b/filter.sln")
+        if not Util.is_file(sln) then
+            pending("fixture files not found")
+            return
+        end
+        local Discover = require("msvc.discover")
+        local projects = Discover.parse_solution_projects(sln)
+        assert.are.equal(5, #projects)
+    end)
+
+    it("sol-c parses 5 projects", function()
+        local sln = fixture("sol-c/demand.sln")
+        if not Util.is_file(sln) then
+            pending("fixture files not found")
+            return
+        end
+        local Discover = require("msvc.discover")
+        local projects = Discover.parse_solution_projects(sln)
+        assert.are.equal(5, #projects)
+    end)
+end)

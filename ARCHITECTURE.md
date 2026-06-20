@@ -8,8 +8,9 @@ singleton (`require('msvc')`) plus a handful of stateless helper modules.
 ```
 lua/msvc/
   init.lua              The Msvc singleton + setup() entry point.
-  config.lua            Schema, merge, validate. Two layers: settings + default + profiles.
-  commands.lua          :Msvc subcommand dispatcher and tab-completion.
+  config.lua            Schema, merge, validate. settings layer only (no profiles).
+  commands.lua          :Msvc subcommand dispatcher — only `cancel` and `log` remain.
+  ui.lua                The msvc:// interactive buffer (layout, keybindings, render).
   build.lua             Spawn MSBuild via vim.system; cancel via taskkill /T /F /PID.
   devenv.lua            Run vcvarsall.bat in cmd.exe; cache the resulting env.
   vswhere.lua           JSON wrapper around vswhere.exe (sync + async).
@@ -28,37 +29,101 @@ The plugin keeps **one** runtime object — the `Msvc` singleton:
 
 | Field                 | Description                                                       |
 |-----------------------|-------------------------------------------------------------------|
-| `config`              | Merged + validated config table                                   |
-| `solution`            | Active `.sln` (auto-selected at startup if single in `cwd`, or on `BufEnter *.sln`, or via `:Msvc solution`) |
+| `config`              | Merged + validated config table (settings only, no profiles)      |
+| `solution`            | Active `.sln` (auto-selected at startup if single in `cwd`, or on `BufEnter *.sln`) |
 | `solution_candidates` | All `.sln` files explicitly opened as buffers in this session     |
 | `project`             | Optional pinned `.vcxproj`                                        |
-| `profile_name`        | Active profile name (scoped to the current context key)           |
+| `settings`            | Flat build-settings table for the active context (configuration, platform, arch, vs_version, jobs) |
 | `install`             | Last vswhere installation record (with `installationPath`, etc.)  |
-| `overrides`           | Profile-field overrides for the current context key, set via `:Msvc update` |
 | `solution_projects`   | `{ name, path }` parsed from the active `.sln`                    |
-| `_context_store`      | In-memory map of `(solution, project)` → `{ profile_name, overrides }` |
-| `_last_build_key`     | Context key of the most recent successful `build()` dispatch; `nil` until first build |
+| `_context_store`      | In-memory map of `(solution, project)` → flat settings table      |
+| `_last_build_key`     | Context key of the most recent `build()` dispatch; `nil` until first build |
+
+## Build settings
+
+Each context key `(solution, project)` stores a **flat settings table** with no profile
+indirection. There are no named profiles.
+
+| Field           | Source                                   | Editable in buffer |
+|-----------------|------------------------------------------|--------------------|
+| `configuration` | Parsed from `.sln` / `.vcxproj`          | Yes (`=` to expand options) |
+| `platform`      | Parsed from `.sln` / `.vcxproj`          | Yes |
+| `arch`          | Fixed list (x86/x64/arm/arm64)           | Yes |
+| `vs_version`    | vswhere installations                    | Yes |
+| `jobs`          | Free number                              | Yes |
+| `winsdk`        | Auto from `<WindowsTargetPlatformVersion>` in `.vcxproj` | No (hidden) |
+| `vcvars_ver`    | Auto from `<PlatformToolset>` in `.vcxproj` | No (hidden) |
+
+Plugin-level config (set once in `setup()`, never in the buffer):
+`vswhere_path`, `vs_requires`, `compile_commands`.
+
+## The msvc:// buffer
+
+`:Msvc` with no arguments opens the interactive buffer. Its layout:
+
+```
+msvc://
+
+Settings                    ← active context's flat settings
+  configuration  Debug
+  platform       x64
+  arch           x64
+  vs_version     latest
+  jobs           4
+
+Pending                     ← empty until an action key is pressed; `-` clears
+  [build] MySolution.sln > ProjectA
+
+Solutions
+  MySolution.sln
+    ProjectA
+    ProjectB
+  OtherSolution.sln
+    ProjectC
+```
+
+**Keybindings** (active only inside the `msvc://` buffer):
+
+| Key  | Action |
+|------|--------|
+| `b`  | Stage build for the solution/project under cursor |
+| `c`  | Stage clean |
+| `r`  | Stage rebuild |
+| `f`  | Stage single-file compile (file = buffer active when `msvc://` was opened) |
+| `l`  | Open log buffer immediately |
+| `x`  | Cancel in-flight build immediately |
+| `=`  | Expand / collapse field options inline |
+| `-`  | Select highlighted option; clear Pending action when on that section |
+| `:w` | Confirm staged action, close buffer, open log |
+| `h?` | Open the `msvc-help://` keybinding reference buffer |
+
+**Single-file compile (`f`):** requires a `.vcxproj` project to be selected (not just a
+solution). Dispatches MSBuild with `/t:ClCompile /p:SelectedFiles=<path>`. The file
+is the buffer that was active at the moment `:Msvc` was invoked — not the most-recently
+visited buffer at the time `f` is pressed. If no project is selected when `f` is pressed,
+the plugin emits a clear error rather than guessing which project owns the file (a source
+file can be included from multiple projects).
 
 ## Build lifecycle
 
-1. `:Msvc build [context-label]` → `Msvc:build()`. If a context label is supplied, the plugin switches to that `(solution, project)` context before building. Tab-completion lists all known context keys (from `_context_store`) with `_last_build_key` first.
-2. Resolve the active profile (named entry shallow-merged over `default`).
-3. `vswhere` → `installationPath` (cached on `Msvc.install`).
-4. `DevEnv.find_msbuild(install)` walks `MSBuild\Current\Bin` then
-   `MSBuild\15.0\Bin` (with optional `amd64` subdir) until `MSBuild.exe`
-   is found.
-5. `DevEnv.resolve(install, arch, vcvars_ver, winsdk)` runs
+1. `:Msvc` → `ui.open()`. Opens the `msvc://` buffer, captures the calling buffer for
+   single-file compile, renders the layout from current singleton state.
+2. User navigates, adjusts Settings fields with `=` / `-`, stages an action with `b`/`c`/`r`/`f`.
+3. `:w` → resolves the pending `(solution, project)` context, switches via `set_solution()`
+   / `set_project()`, then calls `Msvc:build()` / `Msvc:clean()` / `Msvc:rebuild()`.
+4. Buffer closes; log buffer opens.
+5. `vswhere` → `installationPath` (cached on `Msvc.install`).
+6. `DevEnv.find_msbuild(install)` walks `MSBuild\Current\Bin` then
+   `MSBuild\15.0\Bin` (with optional `amd64` subdir) until `MSBuild.exe` is found.
+7. `DevEnv.resolve(install, arch, vcvars_ver, winsdk)` runs
    `cmd.exe /c "call vcvarsall.bat <args> && echo <sentinel> && set"`
-   and parses the resulting environment. Cached per (install, arch,
-   vcvars_ver, winsdk).
-6. `Build.spawn` runs MSBuild via `vim.system` with the env from #5.
-   stdout / stderr stream through the extension bus to subscribers
-   (live-log buffer, etc.).
-7. On exit:
-   - Output is parsed through Vim's `errorformat` and published as a
-     quickfix list.
-   - On success, `compile_commands.generate` invokes
-     `msbuild-extractor-sample` (if installed) under the same env.
+   and parses the resulting environment. Cached per (install, arch, vcvars_ver, winsdk).
+8. `Build.spawn` runs MSBuild via `vim.system`.
+   stdout / stderr stream through the extension bus to subscribers (live-log buffer, etc.).
+9. On exit:
+   - Output is parsed through Vim's `errorformat` and published as a quickfix list.
+   - On success, `compile_commands.generate` invokes `msbuild-extractor-sample`
+     (if installed) under the same env.
 
 ## Why MSBuild is not run inside vcvars
 
@@ -80,9 +145,12 @@ worker nodes do not survive parent termination.
 
 ## Context keys
 
-The pair `(solution, project)` — where either may be `nil` — forms a **context key**. Every call to `set_solution()` or `set_project()` (including `BufEnter *.sln` auto-selection) saves `{ profile_name, overrides }` for the outgoing key and restores the stored state for the incoming key. A key that has never been seen initialises from `settings.default_profile` with empty overrides.
+The pair `(solution, project)` — where either may be `nil` — forms a **context key**.
+Every call to `set_solution()` or `set_project()` saves the current flat settings table
+for the outgoing key and restores the stored settings for the incoming key. A key that
+has never been seen initialises from plugin defaults with empty settings.
 
-Calling `:Msvc profile <name>` or `:Msvc update <field> <value>` mutates the live `profile_name` / `overrides` directly; that state is persisted to `_context_store` automatically on the next key transition. Context state is in-memory only and does not survive Neovim restarts.
+Context state is in-memory only and does not survive Neovim restarts.
 
 ## Solution population
 
@@ -91,15 +159,4 @@ Solutions enter `solution_candidates` in exactly two ways — no background scan
 1. **Startup single-sln check** — `setup()` does a shallow `glob(cwd .. "/*.sln")`. If exactly one `.sln` is found, it is added to `solution_candidates` and immediately selected via `set_solution()`.
 2. **`BufEnter *.sln`** — whenever the user opens a `.sln` buffer (directly or via netrw), the path is appended to `solution_candidates` (deduped, sorted) and `set_solution()` is called unconditionally, making it the active solution and clearing any pinned project.
 
-No other mechanism populates candidates. If the user opens nvim in a directory with multiple `.sln` files, no solution is pre-selected; they open one directly or use `:Msvc solution <path>`.
-
-## Auto-completion sources
-
-- `build` (context label) — all `(solution, project)` pairs from `_context_store`, with `_last_build_key` first.
-- `configuration` / `platform` — parsed from the active `.sln`'s
-  `GlobalSection(SolutionConfigurationPlatforms)` and from any pinned
-  `.vcxproj`.
-- `vs_version` / `vs_products` — `vswhere -all -prerelease`.
-- `vcvars_ver` — directories under `<install>\VC\Tools\MSVC\`.
-- `winsdk` — directories under `Windows Kits\10\Include\10.0.*`.
-- `profile` — `config.profiles` keys.
+No other mechanism populates candidates. If the user opens nvim in a directory with multiple `.sln` files, no solution is pre-selected; they open one directly.

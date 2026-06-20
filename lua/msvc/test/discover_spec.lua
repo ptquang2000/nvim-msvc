@@ -110,4 +110,47 @@ describe("msvc.discover", function()
         assert.is_true(has(r.platforms, "Any CPU"))
     end)
 
+    it("discover_vcxproj_toolchain parses WindowsTargetPlatformVersion", function()
+        local vcxproj = Util.join_path(tmpdir, "proj.vcxproj")
+        write(
+            vcxproj,
+            table.concat({
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
+                "<Project xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">",
+                "  <PropertyGroup>",
+                "    <WindowsTargetPlatformVersion>10.0.19041.0</WindowsTargetPlatformVersion>",
+                "    <PlatformToolset>v142</PlatformToolset>",
+                "  </PropertyGroup>",
+                "</Project>",
+            }, "\n")
+        )
+        local r = Discover.discover_vcxproj_toolchain(vcxproj)
+        assert.are.equal("10.0.19041.0", r.winsdk)
+        assert.are.equal("v142", r.vcvars_ver)
+    end)
+
+    it("discover_vcxproj_toolchain returns empty table for missing file", function()
+        local r = Discover.discover_vcxproj_toolchain(nil)
+        assert.are.same({}, r)
+        local r2 = Discover.discover_vcxproj_toolchain("/nonexistent.vcxproj")
+        assert.are.same({}, r2)
+    end)
+
+    it("discover_vcxproj_toolchain returns nil fields when tags are absent", function()
+        local vcxproj = Util.join_path(tmpdir, "bare.vcxproj")
+        write(vcxproj, "<Project/>")
+        local r = Discover.discover_vcxproj_toolchain(vcxproj)
+        assert.is_nil(r.winsdk)
+        assert.is_nil(r.vcvars_ver)
+    end)
+
+    it("discover_vcxproj_toolchain detects v141 toolset (VS 2017)", function()
+        local vcxproj = Util.join_path(tmpdir, "vs2017.vcxproj")
+        write(
+            vcxproj,
+            "<Project><PropertyGroup><PlatformToolset>v141</PlatformToolset></PropertyGroup></Project>"
+        )
+        local r = Discover.discover_vcxproj_toolchain(vcxproj)
+        assert.are.equal("v141", r.vcvars_ver)
+    end)
 end)
