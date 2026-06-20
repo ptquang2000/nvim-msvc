@@ -35,6 +35,7 @@ local _target = "build"     -- "build" | "clean" | "rebuild" | "compile_file"
 local _source_file = nil    -- captured at open() for single-file compile
 local _mode = "normal"      -- "normal" | "add"
 local _discovered = {}      -- discovered-but-not-staged solution paths (add mode)
+local _add_selected = nil   -- last staged solution in the current add session
 
 local function reset()
     _buf = nil
@@ -45,6 +46,7 @@ local function reset()
     _source_file = nil
     _mode = "normal"
     _discovered = {}
+    _add_selected = nil
 end
 
 local function get_setting_options(msvc, field)
@@ -64,56 +66,27 @@ end
 --- Build the render entries from current singleton + ui state.
 --- Returns list of { text: string, entity: table }.
 local function build_entries(msvc)
-    local Config = require("msvc.config")
-    local s = msvc.settings or {}
     local entries = {}
 
     local function add(text, entity)
         entries[#entries + 1] = { text = text, entity = entity }
     end
 
-    -- Read-only header block
-    add("Solution: " .. (msvc.solution or "<none>"), { type = ENT.SOLUTION_HEADER })
-    add("Target: " .. _target, { type = ENT.TARGET_HEADER })
-    add("Help: h?", { type = ENT.HELP_HEADER })
-    add("", { type = ENT.BLANK })
-
-    -- Settings fields (no section heading)
-    for _, field in ipairs(Config.SETTINGS_FIELDS) do
-        local val = s[field]
-        local val_str = (val ~= nil) and tostring(val) or "-"
-        local is_expanded = _expanded_field == field
-        local marker = is_expanded and "v " or "  "
-        add(
-            marker .. ("  %-15s %s"):format(field, val_str),
-            { type = ENT.SETTINGS_FIELD, field = field, value = val }
-        )
-        if is_expanded then
-            local opts = get_setting_options(msvc, field)
-            for _, opt in ipairs(opts) do
-                local sel = (tostring(opt) == val_str) and "> " or "  "
-                add(
-                    "    " .. sel .. tostring(opt),
-                    { type = ENT.SETTINGS_OPTION, field = field, value = opt }
-                )
-            end
-        end
-    end
-    add("", { type = ENT.BLANK })
-
-    -- Visual separator
-    add(string.rep("─", 40), { type = ENT.SEPARATOR })
-    add("", { type = ENT.BLANK })
-
     if _mode == "add" then
+        add("Solution: " .. (_add_selected or ""), { type = ENT.SOLUTION_HEADER })
+        add("Help: h?", { type = ENT.HELP_HEADER })
+        add("", { type = ENT.BLANK })
+        add(string.rep("─", 40), { type = ENT.SEPARATOR })
+        add("", { type = ENT.BLANK })
+
         add("  Staged", { type = ENT.STAGED_HEADER })
         local staged = msvc.solutions or {}
         if #staged == 0 then
             add("  <none staged>", { type = ENT.BLANK })
         else
             for _, sln_path in ipairs(staged) do
-                local is_active = msvc.solution
-                    and msvc.solution:lower() == sln_path:lower()
+                local is_active = _add_selected
+                    and _add_selected:lower() == sln_path:lower()
                 local sln_marker = is_active and "* " or "  "
                 add(
                     sln_marker .. Util.basename(sln_path),
@@ -137,6 +110,7 @@ local function build_entries(msvc)
             end
         end
         add("", { type = ENT.BLANK })
+
         add("  Unstaged", { type = ENT.UNSTAGED_HEADER })
         if #_discovered == 0 then
             add("  <none found>", { type = ENT.BLANK })
@@ -149,7 +123,39 @@ local function build_entries(msvc)
             end
         end
     else
-        -- Normal mode: show projects of the active solution
+        local Config = require("msvc.config")
+        local s = msvc.settings or {}
+
+        add("Solution: " .. (msvc.solution or "<none>"), { type = ENT.SOLUTION_HEADER })
+        add("Target: " .. _target, { type = ENT.TARGET_HEADER })
+        add("Help: h?", { type = ENT.HELP_HEADER })
+        add("", { type = ENT.BLANK })
+
+        for _, field in ipairs(Config.SETTINGS_FIELDS) do
+            local val = s[field]
+            local val_str = (val ~= nil) and tostring(val) or "-"
+            local is_expanded = _expanded_field == field
+            local marker = is_expanded and "v " or "  "
+            add(
+                marker .. ("  %-15s %s"):format(field, val_str),
+                { type = ENT.SETTINGS_FIELD, field = field, value = val }
+            )
+            if is_expanded then
+                local opts = get_setting_options(msvc, field)
+                for _, opt in ipairs(opts) do
+                    local sel = (tostring(opt) == val_str) and "> " or "  "
+                    add(
+                        "    " .. sel .. tostring(opt),
+                        { type = ENT.SETTINGS_OPTION, field = field, value = opt }
+                    )
+                end
+            end
+        end
+        add("", { type = ENT.BLANK })
+
+        add(string.rep("─", 40), { type = ENT.SEPARATOR })
+        add("", { type = ENT.BLANK })
+
         if not msvc.solution then
             add(
                 "  <no solution — use add mode to register one>",
@@ -192,6 +198,8 @@ local function setup_highlights()
         { "MsvcProject",         "Normal" },
         { "MsvcProjectSelected", "Special" },
         { "MsvcSeparator",       "Comment" },
+        { "MsvcStagedHeader",    "Title" },
+        { "MsvcUnstagedHeader",  "Comment" },
     }
     for _, g in ipairs(groups) do
         vim.api.nvim_set_hl(0, g[1], { link = g[2], default = true })
@@ -230,6 +238,10 @@ local function apply_highlights(buf, entries)
             end
         elseif t == ENT.SEPARATOR then
             vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcSeparator", line, 0, -1)
+        elseif t == ENT.STAGED_HEADER then
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcStagedHeader", line, 0, -1)
+        elseif t == ENT.UNSTAGED_HEADER then
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcUnstagedHeader", line, 0, -1)
         end
     end
 end
@@ -264,6 +276,16 @@ local function setup_autocmds(msvc, buf)
         group = group,
         buffer = buf,
         callback = function()
+            if _mode == "add" then
+                if _add_selected == nil then
+                    Log:warn("msvc: no solution staged — stage one before writing")
+                    return
+                end
+                msvc:set_solution(_add_selected)
+                _mode = "normal"
+                render(msvc, buf)
+                return
+            end
             local ok
             if _target == "build" then
                 ok = msvc:build()
@@ -297,18 +319,22 @@ local function setup_keymaps(msvc, buf)
     end
 
     map("b", function()
+        if _mode == "add" then return end
         _target = "build"
         render(msvc, buf)
     end)
     map("c", function()
+        if _mode == "add" then return end
         _target = "clean"
         render(msvc, buf)
     end)
     map("r", function()
+        if _mode == "add" then return end
         _target = "rebuild"
         render(msvc, buf)
     end)
     map("f", function()
+        if _mode == "add" then return end
         if not msvc.project then
             Log:warn(
                 "msvc: pin a project first before using compile_file"
@@ -326,20 +352,25 @@ local function setup_keymaps(msvc, buf)
     end)
     map("=", function()
         local ent = entity_at_cursor()
-        if not ent or ent.type ~= ENT.SETTINGS_FIELD then
-            return
+        if not ent then return end
+        if ent.type == ENT.SETTINGS_FIELD then
+            _expanded_field = (_expanded_field == ent.field) and nil or ent.field
+            render(msvc, buf)
+        elseif ent.type == ENT.SETTINGS_OPTION then
+            _expanded_field = nil
+            render(msvc, buf)
         end
-        _expanded_field = (_expanded_field == ent.field) and nil or ent.field
-        render(msvc, buf)
     end)
     map("<CR>", function()
         local ent = entity_at_cursor()
-        if not ent then
-            return
-        end
+        if not ent then return end
+        if _mode ~= "add" then return end
+        if ent.type ~= ENT.SOLUTION and ent.type ~= ENT.SOLUTION_UNSTAGED then return end
+
+        local norm = ent.path
+        local lower = norm:lower()
+
         if ent.type == ENT.SOLUTION_UNSTAGED then
-            local norm = ent.path
-            local lower = norm:lower()
             local already = false
             for _, c in ipairs(msvc.solutions) do
                 if c:lower() == lower then
@@ -358,10 +389,12 @@ local function setup_keymaps(msvc, buf)
                 end
             end
             _discovered = new_disc
-            msvc:set_solution(norm)
-            render(msvc, buf)
         end
-        -- All other entity types: no-op
+
+        _add_selected = norm
+        msvc:set_solution(norm)
+        _mode = "normal"
+        render(msvc, buf)
     end)
     map("-", function()
         local ent = entity_at_cursor()
@@ -389,7 +422,6 @@ local function setup_keymaps(msvc, buf)
         elseif ent.type == ENT.SOLUTION then
             local norm = ent.path
             local lower = norm:lower()
-            -- Remove from staged solutions
             local new_slns = {}
             for _, p in ipairs(msvc.solutions or {}) do
                 if p:lower() ~= lower then
@@ -397,14 +429,15 @@ local function setup_keymaps(msvc, buf)
                 end
             end
             msvc.solutions = new_slns
-            -- Clear active if it was this one
             if msvc.solution and msvc.solution:lower() == lower then
                 msvc.solution = nil
                 msvc.project = nil
                 msvc.solution_projects = {}
             end
-            -- In add mode: move back to _discovered and discard context
             if _mode == "add" then
+                if _add_selected and _add_selected:lower() == lower then
+                    _add_selected = nil
+                end
                 _discovered[#_discovered + 1] = norm
                 table.sort(_discovered)
                 msvc:_discard_solution_context(norm)
@@ -413,7 +446,6 @@ local function setup_keymaps(msvc, buf)
         elseif ent.type == ENT.SOLUTION_UNSTAGED then
             local norm = ent.path
             local lower = norm:lower()
-            -- Stage it (add to solutions), remove from _discovered
             local already = false
             for _, c in ipairs(msvc.solutions) do
                 if c:lower() == lower then
@@ -432,6 +464,7 @@ local function setup_keymaps(msvc, buf)
                 end
             end
             _discovered = new_disc
+            _add_selected = norm
             render(msvc, buf)
         end
     end)
@@ -466,6 +499,7 @@ function M.open(msvc, mode, discovered)
     -- Always update mode state, even when reusing an existing buffer.
     _mode = mode
     if mode == "add" then
+        _add_selected = msvc.solution
         local staged_lower = {}
         for _, p in ipairs(msvc.solutions or {}) do
             staged_lower[p:lower()] = true
@@ -555,7 +589,14 @@ end
 M._set_line_map = function(lm)
     _line_map = lm
 end
+M._get_add_selected = function()
+    return _add_selected
+end
+M._set_add_selected = function(s)
+    _add_selected = s
+end
 M._setup_keymaps = setup_keymaps
+M._setup_autocmds = setup_autocmds
 M._render = render
 M._reset = reset
 

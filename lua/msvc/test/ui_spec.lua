@@ -278,21 +278,27 @@ describe("msvc.ui", function()
         assert.are.equal(2, #slns)
     end)
 
-    it("active solution marked with * prefix in add mode staged list", function()
+    it("active solution marked with * prefix in add mode staged list uses _add_selected", function()
         local msvc = fake_msvc({
-            solution = "/a/foo.sln",
+            solution = "/b/bar.sln",  -- msvc.solution differs from _add_selected
             solutions = { "/a/foo.sln", "/b/bar.sln" },
         })
         UI._set_mode("add")
+        UI._set_add_selected("/a/foo.sln")
         UI._set_discovered({})
         local entries = UI._build_entries(msvc)
+        local foo_marked, bar_marked = false, false
         for _, e in ipairs(entries) do
-            if e.entity.type == UI._ENT.SOLUTION and e.entity.path == "/a/foo.sln" then
-                assert.is_truthy(e.text:find("^%* "))
-                return
+            if e.entity.type == UI._ENT.SOLUTION then
+                if e.entity.path == "/a/foo.sln" then
+                    foo_marked = e.text:find("^%* ") ~= nil
+                elseif e.entity.path == "/b/bar.sln" then
+                    bar_marked = e.text:find("^%* ") ~= nil
+                end
             end
         end
-        error("active solution not found in entries")
+        assert.is_true(foo_marked, "/a/foo.sln should be marked (matches _add_selected)")
+        assert.is_false(bar_marked, "/b/bar.sln should not be marked (is msvc.solution, not _add_selected)")
     end)
 
     it("add mode staged group contains SOLUTION entries from msvc.solutions", function()
@@ -365,6 +371,52 @@ describe("msvc.ui", function()
         end
     end)
 
+    it("add mode has no TARGET_HEADER or SETTINGS_FIELD entities", function()
+        local msvc = fake_msvc({ solutions = {} })
+        UI._set_mode("add")
+        UI._set_discovered({})
+        local entries = UI._build_entries(msvc)
+        for _, e in ipairs(entries) do
+            assert.are_not.equal(UI._ENT.TARGET_HEADER, e.entity.type,
+                "TARGET_HEADER must not appear in add mode")
+            assert.are_not.equal(UI._ENT.SETTINGS_FIELD, e.entity.type,
+                "SETTINGS_FIELD must not appear in add mode")
+        end
+    end)
+
+    it("add mode SOLUTION_HEADER text reflects _add_selected, not msvc.solution", function()
+        local msvc = fake_msvc({ solution = "/b/other.sln", solutions = {} })
+        UI._set_mode("add")
+        UI._set_add_selected("/a/chosen.sln")
+        UI._set_discovered({})
+        local entries = UI._build_entries(msvc)
+        for _, e in ipairs(entries) do
+            if e.entity.type == UI._ENT.SOLUTION_HEADER then
+                assert.is_truthy(e.text:find("/a/chosen.sln", 1, true),
+                    "SOLUTION_HEADER should show _add_selected")
+                assert.is_falsy(e.text:find("/b/other.sln", 1, true),
+                    "SOLUTION_HEADER should not show msvc.solution")
+                return
+            end
+        end
+        error("SOLUTION_HEADER not found")
+    end)
+
+    it("add mode SOLUTION_HEADER shows empty string when _add_selected is nil", function()
+        local msvc = fake_msvc({ solution = "/a/foo.sln", solutions = {} })
+        UI._set_mode("add")
+        UI._set_add_selected(nil)
+        UI._set_discovered({})
+        local entries = UI._build_entries(msvc)
+        for _, e in ipairs(entries) do
+            if e.entity.type == UI._ENT.SOLUTION_HEADER then
+                assert.are.equal("Solution: ", e.text)
+                return
+            end
+        end
+        error("SOLUTION_HEADER not found")
+    end)
+
     -- ─── state mutation tests ─────────────────────────────────────────────
 
     it("_set_target / _get_target round-trips correctly", function()
@@ -394,16 +446,18 @@ describe("msvc.ui", function()
         assert.are.same(d, UI._get_discovered())
     end)
 
-    it("_reset clears all module state including _target, mode, and discovered", function()
+    it("_reset clears all module state including _target, mode, discovered, and _add_selected", function()
         UI._set_target("rebuild")
         UI._set_expanded_field("arch")
         UI._set_mode("add")
         UI._set_discovered({ "/a/foo.sln" })
+        UI._set_add_selected("/a/foo.sln")
         UI._reset()
         assert.are.equal("build", UI._get_target())
         assert.is_nil(UI._get_expanded_field())
         assert.are.equal("normal", UI._get_mode())
         assert.are.same({}, UI._get_discovered())
+        assert.is_nil(UI._get_add_selected())
     end)
 
     -- ─── project entries ─────────────────────────────────────────────────────
@@ -766,19 +820,18 @@ describe("msvc.ui", function()
             assert.are.equal(0, #UI._get_discovered())
         end)
 
-        it("<CR> on SOLUTION in add mode is a no-op", function()
+        it("<CR> on SOLUTION in add mode activates it and switches to normal mode", function()
             local msvc = fake_msvc({ solutions = { burn_sln }, solution = burn_sln })
             local _, lm = setup_keymap_buf(msvc, "add", {})
             local sol_line = find_line(lm, function(e)
                 return e.type == UI._ENT.SOLUTION and e.path == burn_sln
             end)
             assert.is_truthy(sol_line, "SOLUTION line not found")
-            -- Temporarily switch solution to something else to verify CR doesn't change it
-            msvc.solution = nil
             vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
             feed("<CR>")
-            -- <CR> on SOLUTION is a no-op — solution should remain nil
-            assert.is_nil(msvc.solution)
+            assert.are.equal(burn_sln, msvc.solution)
+            assert.are.equal("normal", UI._get_mode())
+            assert.are.equal(burn_sln, UI._get_add_selected())
         end)
 
         -- ─── - on SOLUTION (add mode) ────────────────────────────────────────
@@ -846,6 +899,211 @@ describe("msvc.ui", function()
             assert.is_nil(msvc.solution)
             assert.is_nil(msvc.project)
             assert.are.equal(0, #msvc.solutions)
+        end)
+
+        -- ─── <CR> on SOLUTION_UNSTAGED — _add_selected + mode switch ─────────
+
+        it("<CR> on SOLUTION_UNSTAGED sets _add_selected and switches to normal mode", function()
+            local msvc = fake_msvc({ solutions = {} })
+            local _, lm = setup_keymap_buf(msvc, "add", { burn_sln })
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION_UNSTAGED and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line, "SOLUTION_UNSTAGED line not found")
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("<CR>")
+            assert.are.equal(burn_sln, UI._get_add_selected())
+            assert.are.equal("normal", UI._get_mode())
+        end)
+
+        -- ─── - on SOLUTION_UNSTAGED — _add_selected without mode switch ──────
+
+        it("- on SOLUTION_UNSTAGED updates _add_selected without switching mode", function()
+            local msvc = fake_msvc({ solutions = {} })
+            local _, lm = setup_keymap_buf(msvc, "add", { burn_sln })
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION_UNSTAGED and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line)
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("-")
+            assert.are.equal(burn_sln, UI._get_add_selected())
+            assert.are.equal("add", UI._get_mode())
+        end)
+
+        -- ─── - on SOLUTION clears _add_selected when matching ────────────────
+
+        it("- on staged SOLUTION where path == _add_selected clears _add_selected", function()
+            local msvc = fake_msvc({ solutions = { burn_sln } })
+            UI._set_add_selected(burn_sln)
+            local _, lm = setup_keymap_buf(msvc, "add", {})
+            -- After setup, restore _add_selected (setup_keymap_buf calls _reset inside)
+            UI._set_add_selected(burn_sln)
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line)
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("-")
+            assert.is_nil(UI._get_add_selected())
+        end)
+
+        it("- on staged SOLUTION where path != _add_selected preserves _add_selected", function()
+            local other_sln = "/fake/other/other.sln"
+            local msvc = fake_msvc({ solutions = { burn_sln, other_sln } })
+            local _, lm = setup_keymap_buf(msvc, "add", {})
+            UI._set_add_selected(other_sln)
+            local sol_line = find_line(lm, function(e)
+                return e.type == UI._ENT.SOLUTION and e.path == burn_sln
+            end)
+            assert.is_truthy(sol_line)
+            vim.api.nvim_win_set_cursor(0, { sol_line, 0 })
+            feed("-")
+            assert.are.equal(other_sln, UI._get_add_selected())
+        end)
+
+        -- ─── = on SETTINGS_OPTION ────────────────────────────────────────────
+
+        it("= on SETTINGS_OPTION collapses the expanded field", function()
+            local msvc = fake_msvc()
+            local _, lm = setup_keymap_buf(msvc, "normal")
+            UI._set_expanded_field("arch")
+            -- Re-render to get SETTINGS_OPTION lines in lm
+            local entries = UI._build_entries(msvc)
+            local lines, new_lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                new_lm[i] = e.entity
+            end
+            local buf = UI._get_buf()
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            UI._set_line_map(new_lm)
+            local opt_line = find_line(new_lm, function(e)
+                return e.type == UI._ENT.SETTINGS_OPTION and e.field == "arch"
+            end)
+            assert.is_truthy(opt_line, "SETTINGS_OPTION line not found")
+            vim.api.nvim_win_set_cursor(0, { opt_line, 0 })
+            feed("=")
+            assert.is_nil(UI._get_expanded_field())
+        end)
+
+        -- ─── b/c/r/f are no-ops in add mode ─────────────────────────────────
+
+        it("b key is a no-op in add mode", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "add", {})
+            UI._set_target("clean")  -- after setup, which calls _reset()
+            feed("b")
+            assert.are.equal("clean", UI._get_target())
+        end)
+
+        it("c key is a no-op in add mode", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "add", {})
+            feed("c")
+            assert.are.equal("build", UI._get_target())
+        end)
+
+        it("r key is a no-op in add mode", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "add", {})
+            feed("r")
+            assert.are.equal("build", UI._get_target())
+        end)
+
+        it("f key is a no-op in add mode", function()
+            local msvc = fake_msvc({ project = "/a/P.vcxproj" })
+            setup_keymap_buf(msvc, "add", {})
+            feed("f")
+            assert.are.equal("build", UI._get_target())
+        end)
+
+        -- ─── BufWriteCmd in add mode ─────────────────────────────────────────
+
+        local function setup_autocmd_buf(msvc, mode)
+            UI._reset()
+            UI._set_mode(mode or "normal")
+            local buf = vim.api.nvim_create_buf(false, true)
+            vim.api.nvim_buf_set_name(buf, "msvc://test_" .. buf)
+            vim.bo[buf].buftype = "acwrite"
+            vim.bo[buf].bufhidden = "wipe"
+            vim.bo[buf].swapfile = false
+            UI._set_buf(buf)
+            UI._setup_autocmds(msvc, buf)
+            UI._setup_keymaps(msvc, buf)
+            local entries = UI._build_entries(msvc)
+            local lines, lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                lm[i] = e.entity
+            end
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            vim.bo[buf].modified = false
+            UI._set_line_map(lm)
+            vim.cmd("split")
+            vim.api.nvim_win_set_buf(0, buf)
+            return buf
+        end
+
+        it("BufWriteCmd in add mode with nil _add_selected stays in add mode", function()
+            local msvc = fake_msvc({ solutions = {} })
+            local buf = setup_autocmd_buf(msvc, "add")
+            UI._set_add_selected(nil)
+            vim.cmd("silent write")
+            assert.are.equal("add", UI._get_mode())
+            assert.is_nil(msvc.solution)
+            if buf and vim.api.nvim_buf_is_valid(buf) then
+                vim.api.nvim_buf_delete(buf, { force = true })
+            end
+        end)
+
+        it("BufWriteCmd in add mode with valid _add_selected switches to normal mode", function()
+            local msvc = fake_msvc({ solutions = { burn_sln } })
+            local buf = setup_autocmd_buf(msvc, "add")
+            UI._set_add_selected(burn_sln)
+            vim.cmd("silent write")
+            assert.are.equal("normal", UI._get_mode())
+            assert.are.equal(burn_sln, msvc.solution)
+            if buf and vim.api.nvim_buf_is_valid(buf) then
+                vim.api.nvim_buf_delete(buf, { force = true })
+            end
+        end)
+
+        -- ─── open() initialises _add_selected ────────────────────────────────
+
+        it("open() with mode='add' sets _add_selected to msvc.solution", function()
+            local Util = require("msvc.util")
+            local sln = Util.normalize_path(
+                Util.join_path(vim.fn.getcwd(), "tests/fixtures/burn-media/BurnMediaCli.sln")
+            )
+            local msvc = fake_msvc({ solution = sln, solutions = { sln } })
+            UI.open(msvc, "add", {})
+            assert.are.equal(sln, UI._get_add_selected())
+            local b = UI._get_buf()
+            if b and vim.api.nvim_buf_is_valid(b) then
+                vim.api.nvim_buf_delete(b, { force = true })
+            end
+        end)
+
+        it("open() with mode='add' sets _add_selected to nil when msvc.solution is nil", function()
+            local msvc = fake_msvc({ solutions = {} })
+            UI.open(msvc, "add", {})
+            assert.is_nil(UI._get_add_selected())
+            local b = UI._get_buf()
+            if b and vim.api.nvim_buf_is_valid(b) then
+                vim.api.nvim_buf_delete(b, { force = true })
+            end
+        end)
+
+        it("_set_add_selected / _get_add_selected round-trips", function()
+            UI._set_add_selected("/a/foo.sln")
+            assert.are.equal("/a/foo.sln", UI._get_add_selected())
+            UI._set_add_selected(nil)
+            assert.is_nil(UI._get_add_selected())
         end)
     end)
 end)
