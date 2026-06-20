@@ -212,14 +212,14 @@ describe("msvc.ui", function()
         assert.is_true(has_vs_opt, "vs_version options should be visible when expanded")
     end)
 
-    it("v prefix marker appears on expanded field line", function()
+    it("settings field lines never start with 'v' regardless of expand state", function()
         local msvc = fake_msvc()
         UI._set_expanded_field("jobs")
         local entries = UI._build_entries(msvc)
         for _, e in ipairs(entries) do
-            if e.entity.type == UI._ENT.SETTINGS_FIELD and e.entity.field == "jobs" then
-                assert.is_truthy(e.text:find("^v "))
-                return
+            if e.entity.type == UI._ENT.SETTINGS_FIELD then
+                assert.is_falsy(e.text:find("^v "),
+                    "settings field line must not start with 'v': " .. e.text)
             end
         end
     end)
@@ -250,10 +250,10 @@ describe("msvc.ui", function()
 
     -- ─── solutions section — add mode ───────────────────────────────────────
 
-    it("add mode shows STAGED_HEADER and UNSTAGED_HEADER", function()
+    it("add mode shows STAGED_HEADER and UNSTAGED_HEADER when _discovered is non-empty", function()
         local msvc = fake_msvc({ solutions = { "/a/foo.sln" } })
         UI._set_mode("add")
-        UI._set_discovered({})
+        UI._set_discovered({ "/b/bar.sln" })
         local entries = UI._build_entries(msvc)
         local has_staged, has_unstaged = false, false
         for _, e in ipairs(entries) do
@@ -262,6 +262,17 @@ describe("msvc.ui", function()
         end
         assert.is_true(has_staged, "STAGED_HEADER missing in add mode")
         assert.is_true(has_unstaged, "UNSTAGED_HEADER missing in add mode")
+    end)
+
+    it("add mode omits UNSTAGED_HEADER when _discovered is empty", function()
+        local msvc = fake_msvc({ solutions = { "/a/foo.sln" } })
+        UI._set_mode("add")
+        UI._set_discovered({})
+        local entries = UI._build_entries(msvc)
+        for _, e in ipairs(entries) do
+            assert.are_not.equal(UI._ENT.UNSTAGED_HEADER, e.entity.type,
+                "UNSTAGED_HEADER must not appear when _discovered is empty")
+        end
     end)
 
     it("one SOLUTION entry per staged solution in add mode", function()
@@ -350,7 +361,7 @@ describe("msvc.ui", function()
     it("STAGED_HEADER appears before UNSTAGED_HEADER", function()
         local msvc = fake_msvc({ solutions = {} })
         UI._set_mode("add")
-        UI._set_discovered({})
+        UI._set_discovered({ "/b/bar.sln" })
         local entries = UI._build_entries(msvc)
         local staged_pos, unstaged_pos = nil, nil
         for i, e in ipairs(entries) do
@@ -489,7 +500,7 @@ describe("msvc.ui", function()
         end
     end)
 
-    it("SOLUTION line has 'v' marker when solution is in _expanded_solutions", function()
+    it("PROJECT entries appear under expanded SOLUTION in add mode", function()
         local sln = "/a/foo.sln"
         local msvc = fake_msvc({ solutions = { sln } })
         UI._set_mode("add")
@@ -497,19 +508,21 @@ describe("msvc.ui", function()
         UI._set_expanded_solutions({ [sln:lower()] = true })
         local Discover = require("msvc.discover")
         local orig = Discover.parse_solution_projects
-        Discover.parse_solution_projects = function(_) return {} end
+        Discover.parse_solution_projects = function(_)
+            return { { name = "MyProj", path = "/a/src/MyProj.vcxproj" } }
+        end
         local entries = UI._build_entries(msvc)
         Discover.parse_solution_projects = orig
+        local found_project = false
         for _, e in ipairs(entries) do
-            if e.entity.type == UI._ENT.SOLUTION and e.entity.path == sln then
-                assert.is_truthy(e.text:find("v "), "expanded solution should have 'v' marker")
-                return
+            if e.entity.type == UI._ENT.PROJECT then
+                found_project = true
             end
         end
-        error("SOLUTION entry not found")
+        assert.is_true(found_project, "PROJECT entries must appear when solution is expanded")
     end)
 
-    it("SOLUTION line has no 'v' marker when solution is not expanded", function()
+    it("no PROJECT entries appear when solution is not expanded in add mode", function()
         local sln = "/a/foo.sln"
         local msvc = fake_msvc({ solutions = { sln } })
         UI._set_mode("add")
@@ -517,16 +530,15 @@ describe("msvc.ui", function()
         -- _expanded_solutions is empty
         local Discover = require("msvc.discover")
         local orig = Discover.parse_solution_projects
-        Discover.parse_solution_projects = function(_) return {} end
+        Discover.parse_solution_projects = function(_)
+            return { { name = "MyProj", path = "/a/src/MyProj.vcxproj" } }
+        end
         local entries = UI._build_entries(msvc)
         Discover.parse_solution_projects = orig
         for _, e in ipairs(entries) do
-            if e.entity.type == UI._ENT.SOLUTION and e.entity.path == sln then
-                assert.is_falsy(e.text:find("v "), "collapsed solution must not have 'v' marker")
-                return
-            end
+            assert.are_not.equal(UI._ENT.PROJECT, e.entity.type,
+                "PROJECT entries must not appear when solution is collapsed")
         end
-        error("SOLUTION entry not found")
     end)
 
     -- ─── project entries ─────────────────────────────────────────────────────

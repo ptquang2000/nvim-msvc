@@ -133,7 +133,7 @@ function M.setup(msvc)
                     Log:error("msvc: %s", tostring(err))
                 end
             else
-                local ok, err = pcall(ui.open, msvc, "normal")
+                local ok, err = pcall(ui.open, msvc, "add", {})
                 if not ok then
                     Log:error("msvc: %s", tostring(err))
                 end

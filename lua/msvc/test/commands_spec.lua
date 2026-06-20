@@ -147,4 +147,38 @@ describe("msvc.commands", function()
             assert.are.equal(0, #msvc.solutions)
         end)
     end)
+
+    -- ─── no-arg :Msvc dispatch ─────────────────────────────────────────────
+
+    describe("no-arg :Msvc dispatch", function()
+        local function fake_msvc_with_solutions(slns)
+            return {
+                solutions = slns,
+                solution = slns[1] or nil,
+                solution_projects = {},
+                set_solution = function(self, path)
+                    self.solution = path
+                    return true
+                end,
+            }
+        end
+
+        it("routes to add mode with empty discovered when #solutions > 1", function()
+            local UI = require("msvc.ui")
+            local orig_open = UI.open
+            local captured_mode, captured_discovered
+            UI.open = function(_, mode, discovered)
+                captured_mode = mode
+                captured_discovered = discovered
+            end
+            local msvc = fake_msvc_with_solutions({ "/a/foo.sln", "/b/bar.sln" })
+            Commands.setup(msvc)
+            vim.cmd("Msvc")
+            UI.open = orig_open
+            assert.are.equal("add", captured_mode,
+                "should open add mode when #solutions > 1")
+            assert.are.same({}, captured_discovered,
+                "discovered should be empty (no filesystem scan)")
+        end)
+    end)
 end)

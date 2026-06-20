@@ -92,9 +92,8 @@ local function build_entries(msvc)
                 local sln_lower = sln_path:lower()
                 local is_expanded = _expanded_solutions[sln_lower]
                 local active_marker = is_active and "* " or "  "
-                local expand_marker = is_expanded and "v " or "  "
                 add(
-                    active_marker .. expand_marker .. Util.basename(sln_path),
+                    active_marker .. Util.basename(sln_path),
                     { type = ENT.SOLUTION, path = sln_path }
                 )
                 if is_expanded then
@@ -118,10 +117,8 @@ local function build_entries(msvc)
         end
         add("", { type = ENT.BLANK })
 
-        add("  Unstaged", { type = ENT.UNSTAGED_HEADER })
-        if #_discovered == 0 then
-            add("  <none found>", { type = ENT.BLANK })
-        else
+        if #_discovered > 0 then
+            add("  Unstaged", { type = ENT.UNSTAGED_HEADER })
             for _, sln_path in ipairs(_discovered) do
                 add(
                     "  " .. Util.basename(sln_path),
@@ -142,9 +139,8 @@ local function build_entries(msvc)
             local val = s[field]
             local val_str = (val ~= nil) and tostring(val) or "-"
             local is_expanded = _expanded_fields[field]
-            local marker = is_expanded and "v " or "  "
             add(
-                marker .. ("  %-15s %s"):format(field, val_str),
+                ("  %-15s %s"):format(field, val_str),
                 { type = ENT.SETTINGS_FIELD, field = field, value = val }
             )
             if is_expanded then
@@ -228,10 +224,10 @@ local function apply_highlights(buf, entries)
                 vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcHeaderValue", line, colon + 1, -1)
             end
         elseif t == ENT.SETTINGS_FIELD then
-            -- Format: marker(2) + "  "(2) + field(15 padded) + " "(1) + value
-            -- Field name: cols 4–18; value: col 20 onward.
-            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcField", line, 4, 19)
-            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcValue", line, 20, -1)
+            -- Format: "  "(2) + field(15 padded) + " "(1) + value
+            -- Field name: cols 2–16; value: col 18 onward.
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcField", line, 2, 17)
+            vim.api.nvim_buf_add_highlight(buf, HL_NS, "MsvcValue", line, 18, -1)
         elseif t == ENT.SETTINGS_OPTION then
             local is_selected = e.text:find("> ", 1, true) ~= nil
             local hl = is_selected and "MsvcOptionSelected" or "MsvcOption"
