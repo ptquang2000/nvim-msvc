@@ -310,6 +310,116 @@ describe("msvc.compile_commands", function()
                 "expected -I" .. km_path .. " in .clangd")
         end)
 
+        it("Add block contains arch and OS defines for kernel-mode x64 project", function()
+            local Util = require("msvc.util")
+            local vcxproj = Util.join_path(tmpdir, "KmProjX64.vcxproj")
+            local fh = io.open(vcxproj, "wb")
+            fh:write(table.concat({
+                "<Project>",
+                "  <PropertyGroup>",
+                "    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>",
+                "    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>",
+                "  </PropertyGroup>",
+                "</Project>",
+            }, "\n"))
+            fh:close()
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                project = vcxproj,
+                configuration = "Debug",
+                platform = "x64",
+            })
+
+            local c = read_clangd(tmpdir)
+            assert.is_truthy(c:find("-D_WIN64", 1, true))
+            assert.is_truthy(c:find("-D_AMD64_", 1, true))
+            assert.is_truthy(c:find("-DAMD64", 1, true))
+            assert.is_truthy(c:find("-D_WIN32_WINNT=0x0A00", 1, true))
+            assert.is_truthy(c:find("-DWINVER=0x0A00", 1, true))
+        end)
+
+        it("Add block contains arch defines for kernel-mode ARM64 project", function()
+            local Util = require("msvc.util")
+            local vcxproj = Util.join_path(tmpdir, "KmProjArm64.vcxproj")
+            local fh = io.open(vcxproj, "wb")
+            fh:write(table.concat({
+                "<Project>",
+                "  <PropertyGroup>",
+                "    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>",
+                "    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>",
+                "  </PropertyGroup>",
+                "</Project>",
+            }, "\n"))
+            fh:close()
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                project = vcxproj,
+                configuration = "Debug",
+                platform = "ARM64",
+            })
+
+            local c = read_clangd(tmpdir)
+            assert.is_truthy(c:find("-D_WIN64", 1, true))
+            assert.is_truthy(c:find("-D_ARM64_", 1, true))
+            assert.is_truthy(c:find("-DARM64", 1, true))
+            assert.is_falsy(c:find("-D_AMD64_", 1, true))
+        end)
+
+        it("Add block contains arch defines for kernel-mode Win32 project", function()
+            local Util = require("msvc.util")
+            local vcxproj = Util.join_path(tmpdir, "KmProjWin32.vcxproj")
+            local fh = io.open(vcxproj, "wb")
+            fh:write(table.concat({
+                "<Project>",
+                "  <PropertyGroup>",
+                "    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>",
+                "    <WindowsTargetPlatformVersion>10.0.17763.0</WindowsTargetPlatformVersion>",
+                "  </PropertyGroup>",
+                "</Project>",
+            }, "\n"))
+            fh:close()
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                project = vcxproj,
+                configuration = "Debug",
+                platform = "Win32",
+            })
+
+            local c = read_clangd(tmpdir)
+            assert.is_truthy(c:find("-D_X86_", 1, true))
+            assert.is_falsy(c:find("-D_WIN64", 1, true))
+        end)
+
+        it("user-mode toolset does not inject WDK arch or OS defines", function()
+            local Util = require("msvc.util")
+            local vcxproj = Util.join_path(tmpdir, "UmProjNoDef.vcxproj")
+            local fh = io.open(vcxproj, "wb")
+            fh:write(table.concat({
+                "<Project>",
+                "  <PropertyGroup>",
+                "    <PlatformToolset>v143</PlatformToolset>",
+                "    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>",
+                "  </PropertyGroup>",
+                "</Project>",
+            }, "\n"))
+            fh:close()
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                project = vcxproj,
+                configuration = "Debug",
+                platform = "x64",
+            })
+
+            local c = read_clangd(tmpdir)
+            assert.is_falsy(c:find("-D_AMD64_", 1, true))
+            assert.is_falsy(c:find("-D_WIN32_WINNT=", 1, true))
+            assert.is_falsy(c:find("-DWINVER=", 1, true))
+        end)
+
         it("Add block has no -I flag for user-mode toolset even with defines", function()
             local Util = require("msvc.util")
             local vcxproj = Util.join_path(tmpdir, "UmProj.vcxproj")
@@ -339,6 +449,80 @@ describe("msvc.compile_commands", function()
             local c = read_clangd(tmpdir)
             assert.is_falsy(c:find("    - -I", 1, true), "no -I flag expected for user-mode toolset")
             assert.is_truthy(c:find("-DUM_DEFINE", 1, true))
+        end)
+    end)
+
+    describe("wdk_arch_defines", function()
+        it("returns correct defines for x64", function()
+            local d = CC._internal.wdk_arch_defines("x64")
+            assert.is_truthy(vim.tbl_contains(d, "-D_WIN64"))
+            assert.is_truthy(vim.tbl_contains(d, "-D_AMD64_"))
+            assert.is_truthy(vim.tbl_contains(d, "-DAMD64"))
+        end)
+
+        it("returns correct defines for ARM64", function()
+            local d = CC._internal.wdk_arch_defines("ARM64")
+            assert.is_truthy(vim.tbl_contains(d, "-D_WIN64"))
+            assert.is_truthy(vim.tbl_contains(d, "-D_ARM64_"))
+            assert.is_truthy(vim.tbl_contains(d, "-DARM64"))
+        end)
+
+        it("returns correct defines for ARM", function()
+            local d = CC._internal.wdk_arch_defines("ARM")
+            assert.is_truthy(vim.tbl_contains(d, "-D_ARM_"))
+            assert.are.equal(1, #d)
+        end)
+
+        it("returns correct defines for Win32", function()
+            local d = CC._internal.wdk_arch_defines("Win32")
+            assert.is_truthy(vim.tbl_contains(d, "-D_X86_"))
+            assert.are.equal(1, #d)
+        end)
+
+        it("returns empty table for nil", function()
+            assert.are.equal(0, #CC._internal.wdk_arch_defines(nil))
+        end)
+
+        it("returns empty table for unknown platform", function()
+            assert.are.equal(0, #CC._internal.wdk_arch_defines("RISCV64"))
+        end)
+    end)
+
+    describe("wdk_win32_winnt", function()
+        it("returns 0x0A00 for Windows 10", function()
+            assert.are.equal("0x0A00", CC._internal.wdk_win32_winnt("10.0.17763.0"))
+        end)
+
+        it("returns 0x0A00 for any 10.x.x.x", function()
+            assert.are.equal("0x0A00", CC._internal.wdk_win32_winnt("10.0.22621.0"))
+        end)
+
+        it("returns 0x0603 for Windows 8.1", function()
+            assert.are.equal("0x0603", CC._internal.wdk_win32_winnt("6.3.9600.0"))
+        end)
+
+        it("returns 0x0602 for Windows 8", function()
+            assert.are.equal("0x0602", CC._internal.wdk_win32_winnt("6.2.9200.0"))
+        end)
+
+        it("returns 0x0601 for Windows 7", function()
+            assert.are.equal("0x0601", CC._internal.wdk_win32_winnt("6.1.7601.0"))
+        end)
+
+        it("returns nil for nil input", function()
+            assert.is_nil(CC._internal.wdk_win32_winnt(nil))
+        end)
+
+        it("returns nil for empty string", function()
+            assert.is_nil(CC._internal.wdk_win32_winnt(""))
+        end)
+
+        it("returns nil for unrecognised major version", function()
+            assert.is_nil(CC._internal.wdk_win32_winnt("5.1.2600.0"))
+        end)
+
+        it("returns nil for unrecognised Windows 6.x minor", function()
+            assert.is_nil(CC._internal.wdk_win32_winnt("6.0.6002.0"))
         end)
     end)
 

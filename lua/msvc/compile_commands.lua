@@ -206,6 +206,40 @@ local function find_wdk_km_path(winsdk_version)
     return nil
 end
 
+local WDK_ARCH_DEFINES = {
+    x64   = { "-D_WIN64", "-D_AMD64_", "-DAMD64" },
+    ARM64 = { "-D_WIN64", "-D_ARM64_", "-DARM64" },
+    ARM   = { "-D_ARM_" },
+    Win32 = { "-D_X86_" },
+}
+
+local function wdk_arch_defines(platform)
+    if not platform or platform == "" then
+        return {}
+    end
+    return WDK_ARCH_DEFINES[platform] or {}
+end
+
+local function wdk_win32_winnt(winsdk)
+    if not winsdk or winsdk == "" then
+        return nil
+    end
+    local major = tonumber(winsdk:match("^(%d+)%."))
+    local minor = tonumber(winsdk:match("^%d+%.(%d+)")) or 0
+    if not major then
+        return nil
+    end
+    if major == 10 then
+        return "0x0A00"
+    elseif major == 6 then
+        if minor == 3 then return "0x0603"
+        elseif minor == 2 then return "0x0602"
+        elseif minor == 1 then return "0x0601"
+        end
+    end
+    return nil
+end
+
 local CLANGD_REMOVE = {
     "/Zc:*",
     "/MP",
@@ -246,6 +280,14 @@ function M.generate_clangd(opts)
             local km = find_wdk_km_path(toolchain.winsdk)
             if km then
                 add_items[#add_items + 1] = "-I" .. km
+            end
+            for _, d in ipairs(wdk_arch_defines(opts.platform)) do
+                add_items[#add_items + 1] = d
+            end
+            local winnt = wdk_win32_winnt(toolchain.winsdk)
+            if winnt then
+                add_items[#add_items + 1] = "-D_WIN32_WINNT=" .. winnt
+                add_items[#add_items + 1] = "-DWINVER=" .. winnt
             end
         end
         local defines =
@@ -490,6 +532,8 @@ M._internal = {
     build_argv = build_argv,
     find_vc_tools_install_dir = find_vc_tools_install_dir,
     find_wdk_km_path = find_wdk_km_path,
+    wdk_arch_defines = wdk_arch_defines,
+    wdk_win32_winnt = wdk_win32_winnt,
     resolve_outpath = resolve_outpath,
     resolve_anchor = resolve_anchor,
     collect_builddir_slns = collect_builddir_slns,
