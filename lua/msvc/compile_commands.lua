@@ -176,6 +176,36 @@ local function build_argv(opts)
     return argv
 end
 
+--- Resolve the WDK `km\` include directory for `winsdk_version`.
+--- Resolution order: registry KitsRoot10 → two standard install roots.
+--- Returns the first path where `Util.is_dir` is true, or nil.
+local function find_wdk_km_path(winsdk_version)
+    if not winsdk_version or winsdk_version == "" then
+        return nil
+    end
+    local roots = {}
+    local reg_out = vim.fn.system({
+        "reg", "query",
+        "HKLM\\SOFTWARE\\Microsoft\\Windows Kits\\Installed Roots",
+        "/v", "KitsRoot10",
+    })
+    if type(reg_out) == "string" then
+        local val = reg_out:match("KitsRoot10%s+REG_SZ%s+(.-)%s*\n")
+        if val and val ~= "" then
+            roots[#roots + 1] = val:gsub("\\+$", "")
+        end
+    end
+    roots[#roots + 1] = "C:\\Program Files (x86)\\Windows Kits\\10"
+    roots[#roots + 1] = "C:\\Program Files\\Windows Kits\\10"
+    for _, root in ipairs(roots) do
+        local km = Util.join_path(root, "Include", winsdk_version, "km")
+        if Util.is_dir(km) then
+            return km
+        end
+    end
+    return nil
+end
+
 local CLANGD_REMOVE = {
     "/Zc:*",
     "/MP",
@@ -210,12 +240,23 @@ function M.generate_clangd(opts)
         lines[#lines + 1] = "    - " .. flag
     end
     if opts.project and opts.project ~= "" and opts.configuration and opts.platform then
+        local add_items = {}
+        local toolchain = Discover.discover_vcxproj_toolchain(opts.project)
+        if toolchain.vcvars_ver and toolchain.vcvars_ver:lower():find("kernelmode", 1, true) then
+            local km = find_wdk_km_path(toolchain.winsdk)
+            if km then
+                add_items[#add_items + 1] = "-I" .. km
+            end
+        end
         local defines =
             Discover.parse_vcxproj_defines(opts.project, opts.configuration, opts.platform)
-        if #defines > 0 then
+        for _, d in ipairs(defines) do
+            add_items[#add_items + 1] = d
+        end
+        if #add_items > 0 then
             lines[#lines + 1] = "  Add:"
-            for _, d in ipairs(defines) do
-                lines[#lines + 1] = "    - " .. d
+            for _, item in ipairs(add_items) do
+                lines[#lines + 1] = "    - " .. item
             end
         end
     end
@@ -448,6 +489,7 @@ end
 M._internal = {
     build_argv = build_argv,
     find_vc_tools_install_dir = find_vc_tools_install_dir,
+    find_wdk_km_path = find_wdk_km_path,
     resolve_outpath = resolve_outpath,
     resolve_anchor = resolve_anchor,
     collect_builddir_slns = collect_builddir_slns,
