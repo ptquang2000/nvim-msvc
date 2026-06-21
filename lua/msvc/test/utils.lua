@@ -8,6 +8,13 @@ function M.reset()
     require("plenary.reload").reload_module("msvc")
 end
 
+--- Lightweight reset for specs that only test msvc.init.
+--- Clears only package.loaded["msvc"] so leaf modules (config, util, discover,
+--- etc.) stay cached across before_each calls, cutting reload cost to one file.
+function M.reset_init_only()
+    package.loaded["msvc"] = nil
+end
+
 --- Build a fake MsvcConfig for tests. `overrides` is deep-merged on top.
 --- @param overrides table|nil
 --- @return table

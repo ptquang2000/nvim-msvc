@@ -7,7 +7,7 @@ describe("msvc.init — context store", function()
     local tmpdir
 
     before_each(function()
-        helpers.reset()
+        helpers.reset_init_only()
         Msvc = require("msvc")
         Config = require("msvc.config")
         Util = require("msvc.util")
@@ -156,7 +156,7 @@ describe("msvc.init — set_solution / set_project", function()
     local tmpdir
 
     before_each(function()
-        helpers.reset()
+        helpers.reset_init_only()
         Msvc = require("msvc")
         Util = require("msvc.util")
         tmpdir = vim.fn.tempname()
@@ -310,7 +310,7 @@ describe("msvc.init — _compute_sln_mtime and compile_commands dirty check", fu
     local tmpdir
 
     before_each(function()
-        helpers.reset()
+        helpers.reset_init_only()
         Msvc = require("msvc")
         Util = require("msvc.util")
         CompileCommands = require("msvc.compile_commands")
@@ -487,7 +487,7 @@ describe("msvc.init — build dispatches with fixture solutions", function()
     local FIXTURES = "tests/fixtures"
 
     before_each(function()
-        helpers.reset()
+        helpers.reset_init_only()
         Msvc = require("msvc")
         Config = require("msvc.config")
         Util = require("msvc.util")
