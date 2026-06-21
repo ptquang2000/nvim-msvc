@@ -139,6 +139,7 @@ local function append_line(buf, line)
             false,
             { line }
         )
+        vim.bo[buf].modified = false
         vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
         for _, win in ipairs(vim.api.nvim_list_wins()) do
             if vim.api.nvim_win_get_buf(win) == buf then
@@ -152,6 +153,7 @@ end
 local function reset_buf(buf, banner)
     vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, { banner })
+    vim.bo[buf].modified = false
     vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
 end
 
