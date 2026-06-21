@@ -281,6 +281,97 @@ describe("msvc.discover", function()
         assert.is_true(r[1] < r[2], "results should be sorted")
     end)
 
+    -- ─── parse_vcxproj_defines ──────────────────────────────────────────────
+
+    describe("parse_vcxproj_defines", function()
+        it("returns correct defines for matching Configuration|Platform", function()
+            local vcxproj = Util.join_path(tmpdir, "defines.vcxproj")
+            write(
+                vcxproj,
+                table.concat({
+                    "<Project>",
+                    "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">",
+                    "    <ClCompile>",
+                    "      <PreprocessorDefinitions>FOO;BAR=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+                    "    </ClCompile>",
+                    "  </ItemDefinitionGroup>",
+                    "</Project>",
+                }, "\n")
+            )
+            local r = Discover.parse_vcxproj_defines(vcxproj, "Debug", "x64")
+            assert.are.same({ "-DFOO", "-DBAR=1" }, r)
+        end)
+
+        it("returns {} when condition block is absent", function()
+            local vcxproj = Util.join_path(tmpdir, "nodefs.vcxproj")
+            write(vcxproj, "<Project/>")
+            local r = Discover.parse_vcxproj_defines(vcxproj, "Debug", "x64")
+            assert.are.same({}, r)
+        end)
+
+        it("drops %(PreprocessorDefinitions) tokens", function()
+            local vcxproj = Util.join_path(tmpdir, "inherit.vcxproj")
+            write(
+                vcxproj,
+                table.concat({
+                    "<Project>",
+                    "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|Win32'\">",
+                    "    <ClCompile>",
+                    "      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+                    "    </ClCompile>",
+                    "  </ItemDefinitionGroup>",
+                    "</Project>",
+                }, "\n")
+            )
+            local r = Discover.parse_vcxproj_defines(vcxproj, "Release", "Win32")
+            assert.are.same({ "-DNDEBUG" }, r)
+        end)
+
+        it("returns {} for missing or nil file", function()
+            assert.are.same({}, Discover.parse_vcxproj_defines(nil, "Debug", "x64"))
+            assert.are.same(
+                {},
+                Discover.parse_vcxproj_defines("/nonexistent.vcxproj", "Debug", "x64")
+            )
+        end)
+
+        it("falls back to unconditional ItemDefinitionGroup", function()
+            local vcxproj = Util.join_path(tmpdir, "uncond.vcxproj")
+            write(
+                vcxproj,
+                table.concat({
+                    "<Project>",
+                    "  <ItemDefinitionGroup>",
+                    "    <ClCompile>",
+                    "      <PreprocessorDefinitions>GLOBAL_DEFINE;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+                    "    </ClCompile>",
+                    "  </ItemDefinitionGroup>",
+                    "</Project>",
+                }, "\n")
+            )
+            local r = Discover.parse_vcxproj_defines(vcxproj, "Debug", "x64")
+            assert.are.same({ "-DGLOBAL_DEFINE" }, r)
+        end)
+
+        it("handles multiple defines separated by semicolons", function()
+            local vcxproj = Util.join_path(tmpdir, "multi.vcxproj")
+            write(
+                vcxproj,
+                table.concat({
+                    "<Project>",
+                    "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">",
+                    "    <ClCompile>",
+                    "      <PreprocessorDefinitions>A;B=2;C=hello;%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+                    "    </ClCompile>",
+                    "  </ItemDefinitionGroup>",
+                    "</Project>",
+                }, "\n")
+            )
+            local r = Discover.parse_vcxproj_defines(vcxproj, "Debug", "x64")
+            assert.are.same({ "-DA", "-DB=2", "-DC=hello" }, r)
+        end)
+    end)
+
     it("find_sln_files returns empty list when system returns nothing", function()
         local orig_executable = vim.fn.executable
         local orig_system = vim.fn.system

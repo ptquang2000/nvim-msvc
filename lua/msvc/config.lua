@@ -26,7 +26,6 @@ function M.get_default_config()
             compile_commands = {
                 enabled = true,
                 builddir = "bin/cmake",
-                outdir = "bin",
                 merge = true,
                 deduplicate = true,
                 extra_args = {},

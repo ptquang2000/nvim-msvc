@@ -213,6 +213,78 @@ function M.discover_vcxproj_toolchain(vcxproj_path)
     return { winsdk = winsdk, vcvars_ver = toolset }
 end
 
+--- Parse `<PreprocessorDefinitions>` from the `<ItemDefinitionGroup>` block
+--- that matches `configuration|platform`. Falls back to unconditional groups.
+--- Returns a `string[]` of `-D<define>` entries; `{}` if nothing found.
+---@param vcxproj_path string
+---@param configuration string
+---@param platform string
+---@return string[]
+function M.parse_vcxproj_defines(vcxproj_path, configuration, platform)
+    if not vcxproj_path or not Util.is_file(vcxproj_path) then
+        return {}
+    end
+    local body = Util.read_file(vcxproj_path)
+    if not body then
+        return {}
+    end
+
+    local cfg_plat = configuration .. "|" .. platform
+    local defines_raw = nil
+    local fallback_defines = nil
+
+    local pos = 1
+    while true do
+        local tag_s = body:find("<ItemDefinitionGroup", pos, true)
+        if not tag_s then
+            break
+        end
+        local tag_e = body:find(">", tag_s, true)
+        if not tag_e then
+            break
+        end
+        local opening_tag = body:sub(tag_s, tag_e)
+        local close_s = body:find("</ItemDefinitionGroup>", tag_e, true)
+        if not close_s then
+            break
+        end
+        local block = body:sub(tag_e + 1, close_s - 1)
+
+        if opening_tag:find(cfg_plat, 1, true) then
+            local defs = block:match(
+                "<PreprocessorDefinitions[^>]*>([^<]*)</PreprocessorDefinitions>"
+            )
+            if defs then
+                defines_raw = defs
+                break
+            end
+        elseif not opening_tag:find("Condition", 1, true) and not fallback_defines then
+            local defs = block:match(
+                "<PreprocessorDefinitions[^>]*>([^<]*)</PreprocessorDefinitions>"
+            )
+            if defs then
+                fallback_defines = defs
+            end
+        end
+
+        pos = close_s + 1
+    end
+
+    local raw = defines_raw or fallback_defines
+    if not raw then
+        return {}
+    end
+
+    local out = {}
+    for token in (raw .. ";"):gmatch("([^;]*);") do
+        token = token:match("^%s*(.-)%s*$")
+        if token ~= "" and token ~= "%(PreprocessorDefinitions)" then
+            out[#out + 1] = "-D" .. token
+        end
+    end
+    return out
+end
+
 --- Find .sln files recursively in `cwd`, ignoring .gitignore.
 --- Uses `rg` when available, PowerShell as fallback.
 ---@param cwd string
