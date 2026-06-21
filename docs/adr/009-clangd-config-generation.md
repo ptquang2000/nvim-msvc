@@ -22,7 +22,7 @@ unrecognised flags globally, `CompileFlags.Add` injects project-level defines, a
 
 ### Generate `.clangd` always alongside `compile_commands.json`
 
-The `g` action in the `msvc://` buffer triggers both. There is no way to generate one
+The `G` action in the `msvc://` buffer triggers both. There is no way to generate one
 without the other. The `.clangd` file is always overwritten unconditionally; it is treated as
 fully plugin-owned.
 

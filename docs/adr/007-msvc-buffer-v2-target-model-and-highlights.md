@@ -9,7 +9,7 @@ ADR 004 introduced the `msvc://` buffer with a Pending section: the user pressed
 
 Three pain points remained:
 
-1. **Cursor-dependent staging**: `b`/`c`/`r`/`f` required the cursor to be on a solution or project line, which broke flow when the user just wanted to switch from `build` to `clean` without repositioning.
+1. **Cursor-dependent staging**: `b`/`c`/`r`/`f` required the cursor to be on a solution or project line, which broke flow when the user just wanted to switch from `build` to `clean` without repositioning. (Keys are now uppercase: `B`/`C`/`R`/`F`/`G`.)
 2. **No colour**: all lines were monochrome; the buffer was hard to scan at a glance.
 3. **`jobs` had no user-configurable default**: it initialised to `nil` per context, so every new context required the user to set it manually.
 
@@ -19,7 +19,7 @@ Three pain points remained:
 
 ```
 Solution: /path/to/Active.sln       ← read-only label
-Target: build                       ← read-only label; b/c/r/f switch value
+Target: build                       ← read-only label; B/C/R/F/G switch value
 Help: h?                            ← read-only label
 
   configuration  Debug              ← settings fields; = to expand options
@@ -53,14 +53,15 @@ The `# Settings`, `# Pending`, and `# Solutions` section headers are removed. Se
 A new module-level variable `_target` replaces `_pending`:
 
 ```lua
-_target = "build"  -- "build" | "clean" | "rebuild" | "compile_file"
+_target = "build"  -- "build" | "clean" | "rebuild" | "compile_file" | "generate"
 ```
 
-- `b` sets `_target = "build"`, re-renders.
-- `c` sets `_target = "clean"`, re-renders.
-- `r` sets `_target = "rebuild"`, re-renders.
-- `f` sets `_target = "compile_file"`, re-renders. Requires `msvc.project` and `_source_file`; emits an error and does not change `_target` if either is missing.
-- All four keys work regardless of cursor position.
+- `B` sets `_target = "build"`, re-renders.
+- `C` sets `_target = "clean"`, re-renders.
+- `R` sets `_target = "rebuild"`, re-renders.
+- `F` sets `_target = "compile_file"`, re-renders. Requires `msvc.project` and `_source_file`; emits an error and does not change `_target` if either is missing.
+- `G` sets `_target = "generate"`, re-renders. Triggers `compile_commands.json` + `.clangd` generation with no MSBuild invocation.
+- All five keys work regardless of cursor position.
 
 `:w` fires `_target` against `msvc.solution` + `msvc.project`. The Pending section is removed; `_pending` state is removed.
 
@@ -108,7 +109,7 @@ This ensures memory does not accumulate for solutions the user has explicitly di
 
 ## Consequences
 
-- `b`/`c`/`r`/`f` are no longer cursor-sensitive — the build type can be switched from any line.
+- `B`/`C`/`R`/`F`/`G` are not cursor-sensitive — the build type can be switched from any line.
 - The Pending section and `_pending` state are removed. `:w` always acts on the current `(msvc.solution, msvc.project, _target)` triple.
 - A new context starts with `jobs = 6` (or the user-configured default) instead of `nil`, so builds no longer require manual job-count configuration.
 - Colour adapts to any colorscheme via highlight linking; users may override any `Msvc*` group in their config.

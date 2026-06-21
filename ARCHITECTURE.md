@@ -15,9 +15,9 @@ lua/msvc/
   devenv.lua            Run vcvarsall.bat in cmd.exe; cache the resulting env.
   vswhere.lua           JSON wrapper around vswhere.exe (sync + async).
   discover.lua          Parse .sln projects and configuration/platform targets; shallow single-sln startup scan.
-  compile_commands.lua  Drive msbuild-extractor-sample after a successful build.
-  quickfix.lua          Parse MSBuild output through Vim's errorformat.
-  log.lua               vim.notify wrapper + live-tail buffer for build output.
+  compile_commands.lua  Drive msbuild-extractor-sample; generate compile_commands.json + .clangd (with WDK km\ paths and arch/OS defines for kernel-mode projects).
+  log.lua               vim.notify wrapper + live-tail buffer for build output (opens as horizontal split).
+  ui_help.lua           The msvc-help:// keybinding reference buffer.
   extensions.lua        Frozen event names + listener bus (BUILD_START/OUTPUT/DONE/CANCEL).
   health.lua            :checkhealth msvc.
   util.lua              Path helpers (normalize, join, resolve, basename, ...).
@@ -63,7 +63,7 @@ Plugin-level config (set once in `setup()`, never in the buffer):
 
 ```
 Solution: /path/to/MySolution.sln   ← read-only label
-Target: build                       ← current build type; b/c/r/f to switch
+Target: build                       ← current build type; B/C/R/F/G to switch
 Help: h?                            ← read-only label
 
   configuration  Debug              ← settings fields; = to expand options
@@ -83,11 +83,12 @@ Help: h?                            ← read-only label
 
 | Key  | Action |
 |------|--------|
-| `b`  | Set target → `build` (works from any cursor position) |
-| `c`  | Set target → `clean` |
-| `r`  | Set target → `rebuild` |
-| `f`  | Set target → `compile_file` (requires a pinned project and a captured source file) |
-| `l`  | Open log buffer immediately |
+| `B`  | Set target → `build` (works from any cursor position) |
+| `C`  | Set target → `clean` |
+| `R`  | Set target → `rebuild` |
+| `F`  | Set target → `compile_file` (requires a pinned project and a captured source file) |
+| `G`  | Set target → `generate` (compile_commands.json + .clangd only, no build) |
+| `l`  | Open log buffer immediately (horizontal split) |
 | `x`  | Cancel in-flight build immediately |
 | `=`  | Expand / collapse settings field options inline |
 | `-`  | On project line: select or deselect as build scope; on settings option: apply value |
@@ -95,7 +96,7 @@ Help: h?                            ← read-only label
 | `h?` | Open the `msvc-help://` keybinding reference buffer |
 | `q`  | Close the buffer without firing |
 
-**Target model:** `b`/`c`/`r`/`f` switch the `Target:` header value and are not
+**Target model:** `B`/`C`/`R`/`F`/`G` switch the `Target:` header value and are not
 cursor-sensitive. `:w` always fires against `(msvc.solution, msvc.project, _target)`.
 When no project is selected (`msvc.project == nil`), the build targets the full solution.
 
@@ -109,7 +110,7 @@ file captured at buffer-open time. Emits a clear error if either is missing.
 
 1. `:Msvc` → `ui.open()`. Opens the `msvc://` buffer, captures the calling buffer for
    single-file compile, renders the layout from current singleton state.
-2. User navigates, adjusts Settings fields with `=` / `-`, stages an action with `b`/`c`/`r`/`f`.
+2. User navigates, adjusts Settings fields with `=` / `-`, stages an action with `B`/`C`/`R`/`F`/`G`.
 3. `:w` → resolves the pending `(solution, project)` context, switches via `set_solution()`
    / `set_project()`, then calls `Msvc:build()` / `Msvc:clean()` / `Msvc:rebuild()`.
 4. Buffer closes; log buffer opens.
@@ -122,7 +123,6 @@ file captured at buffer-open time. Emits a clear error if either is missing.
 8. `Build.spawn` runs MSBuild via `vim.system`.
    stdout / stderr stream through the extension bus to subscribers (live-log buffer, etc.).
 9. On exit:
-   - Output is parsed through Vim's `errorformat` and published as a quickfix list.
    - On success, `compile_commands.generate` invokes `msbuild-extractor-sample`
      (if installed) under the same env.
 

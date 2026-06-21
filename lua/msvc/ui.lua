@@ -332,22 +332,22 @@ local function setup_keymaps(msvc, buf)
         vim.keymap.set("n", key, fn, map_opts)
     end
 
-    map("b", function()
+    map("B", function()
         if _mode == "add" then return end
         _target = "build"
         render(msvc, buf)
     end)
-    map("c", function()
+    map("C", function()
         if _mode == "add" then return end
         _target = "clean"
         render(msvc, buf)
     end)
-    map("r", function()
+    map("R", function()
         if _mode == "add" then return end
         _target = "rebuild"
         render(msvc, buf)
     end)
-    map("f", function()
+    map("F", function()
         if _mode == "add" then return end
         if not msvc.project then
             Log:warn(
@@ -498,7 +498,7 @@ local function setup_keymaps(msvc, buf)
             render(msvc, buf)
         end
     end)
-    map("g", function()
+    map("G", function()
         if _mode == "add" then return end
         _target = "generate"
         render(msvc, buf)

@@ -33,7 +33,7 @@ Help: h?
       Found.sln
 ```
 
-- **No Target header.** `b`/`c`/`r`/`f` are no-ops in add mode.
+- **No Target header.** `B`/`C`/`R`/`F`/`G` are no-ops in add mode.
 - **No Settings block.** Settings are only meaningful in normal mode.
 - The Separator appears between the header block and the solution lists (same as normal mode).
 - Staged shows `msvc.solutions`; Unstaged shows `_discovered` minus already-staged paths.
@@ -64,7 +64,7 @@ _add_selected = nil  -- string path or nil
 | `q`    | —                  | Close buffer (same as normal mode) |
 | `l`    | —                  | Open log buffer (same as normal mode) |
 | `x`    | —                  | Cancel in-flight build (same as normal mode) |
-| `b`/`c`/`r`/`f` | — | No-op in add mode |
+| `B`/`C`/`R`/`F`/`G` | — | No-op in add mode |
 
 `<CR>` and `:w` both switch mode in-place — the `msvc://` buffer content transitions to the normal-mode layout without closing or re-opening the buffer.
 
@@ -102,6 +102,6 @@ This allows the user to collapse an expanded field from any line within the opti
 - Add mode is now visually distinct from normal mode: no Target header, no Settings block.
 - `_add_selected` makes `:w` in add mode deterministic — the header always shows what `:w` will activate.
 - Pressing `<CR>` on any solution in add mode transitions in-place to normal mode, replacing the full open/close/reopen cycle.
-- `b`/`c`/`r`/`f` become no-ops in add mode — the target value is preserved and takes effect when normal mode is entered.
+- `B`/`C`/`R`/`F`/`G` become no-ops in add mode — the target value is preserved and takes effect when normal mode is entered.
 - `=` can now collapse an expanded settings field regardless of cursor position within the expanded block.
 - ADR 006's add-mode keybinding table and ADR 007's add-mode layout description are superseded by this ADR.

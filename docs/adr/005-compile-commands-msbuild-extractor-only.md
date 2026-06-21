@@ -70,8 +70,8 @@ cleaned up. The `on_done` callback receives `false`.
 
 ### Explicit generation via msvc:// action page
 
-Generation is triggered from the normal-mode `msvc://` buffer by pressing `g`. The `[g]`
-action entry is shown only when `cc.enabled` is not false. Pressing `g` calls
+Generation is triggered from the normal-mode `msvc://` buffer by pressing `G`. The `[G]`
+action entry is shown only when `cc.enabled` is not false. Pressing `G` calls
 `_run_compile_commands` on the singleton, which resolves the VS install path and spawns the
 extractor pool.
 
@@ -116,7 +116,7 @@ reference the same installation.
 - The `cc.merge` config field no longer has effect on individual extractor runs (each run
   writes to a fresh temp file). It is kept in the schema for backwards compatibility but is
   effectively ignored; the final output is always written fresh.
-- Generation fires only when the user explicitly presses `g` in the `msvc://` buffer.
+- Generation fires only when the user explicitly presses `G` in the `msvc://` buffer.
   vswhere is invoked synchronously at that point via `resolve_install`, which is acceptable —
   vswhere is fast and is already invoked synchronously elsewhere in the build path.
 - Users with `cc.builddir` set to a CMake build tree will now have their sub-solutions

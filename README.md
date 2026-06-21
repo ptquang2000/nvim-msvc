@@ -67,7 +67,10 @@ Two top-level keys:
 
 `compile_commands.json` is written next to the active `.sln`. A `.clangd` config is
 written to the same directory with MSVC-incompatible flags stripped and project
-preprocessor defines injected (when a project is pinned).
+preprocessor defines injected (when a project is pinned). For kernel-mode projects
+(PlatformToolset contains `kernelmode`), the WDK `km\` include path and
+platform-specific defines (`_AMD64_` / `_ARM64_` / `_X86_`, `_WIN32_WINNT`, `WINVER`)
+are also injected automatically.
 
 ### `default_settings`
 
@@ -123,11 +126,11 @@ Help: h?
 
 | Key  | Action                                                          |
 |------|-----------------------------------------------------------------|
-| `b`  | Set target to `build`                                           |
-| `c`  | Set target to `clean`                                           |
-| `r`  | Set target to `rebuild`                                         |
-| `f`  | Set target to `compile_file` (requires a pinned project)        |
-| `g`  | Set target to `generate` (compile_commands + .clangd only, no build) |
+| `B`  | Set target to `build`                                           |
+| `C`  | Set target to `clean`                                           |
+| `R`  | Set target to `rebuild`                                         |
+| `F`  | Set target to `compile_file` (requires a pinned project)        |
+| `G`  | Set target to `generate` (compile_commands + .clangd only, no build) |
 | `=`  | Expand field options; collapse if cursor is on an option line   |
 | `-`  | On a project line: pin / unpin. On an option: apply value       |
 | `:w` | Fire the current target against `(solution, project)`           |
@@ -136,7 +139,7 @@ Help: h?
 | `h?` | Open `msvc-help://` keybinding reference                        |
 | `q`  | Close buffer                                                    |
 
-`b` / `c` / `r` / `f` work from any cursor position. When a project is selected (`*`),
+`B` / `C` / `R` / `F` work from any cursor position. When a project is selected (`*`),
 `:w` builds that project alone; otherwise it builds the full solution.
 
 Pressing `=` on a settings field expands the known values inline. Options for
