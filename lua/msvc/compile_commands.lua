@@ -99,6 +99,58 @@ local function collect_builddir_slns(builddir, solution)
     return Discover.find_slns(norm)
 end
 
+--- Scan {install_path}\VC\Tools\MSVC\* for the highest version subdirectory.
+--- Returns the full path to that directory, or nil if none is found.
+local function find_vc_tools_install_dir(install_path)
+    if not install_path or install_path == "" then
+        return nil
+    end
+    local msvc_root = Util.join_path(install_path, "VC", "Tools", "MSVC")
+    if not Util.is_dir(msvc_root) then
+        return nil
+    end
+    local scanner = vim.uv.fs_scandir(msvc_root)
+    if not scanner then
+        return nil
+    end
+    local best_name = nil
+    local best_parts = nil
+    while true do
+        local name, ftype = vim.uv.fs_scandir_next(scanner)
+        if not name then
+            break
+        end
+        if ftype == "directory" and not name:match("[^%d%.]") then
+            local parts = {}
+            for n in name:gmatch("%d+") do
+                parts[#parts + 1] = tonumber(n)
+            end
+            if #parts >= 2 then
+                if not best_name then
+                    best_name = name
+                    best_parts = parts
+                else
+                    for i = 1, math.max(#parts, #best_parts) do
+                        local a = parts[i] or 0
+                        local b = best_parts[i] or 0
+                        if a > b then
+                            best_name = name
+                            best_parts = parts
+                            break
+                        elseif a < b then
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not best_name then
+        return nil
+    end
+    return Util.join_path(msvc_root, best_name)
+end
+
 local function build_argv(opts)
     local argv = { opts.extractor }
     if opts.solution and opts.solution ~= "" then
@@ -117,6 +169,11 @@ local function build_argv(opts)
         argv[#argv + 1] = "--vs-path"
         argv[#argv + 1] = opts.vs_path
     end
+    if opts.vc_tools_install_dir and opts.vc_tools_install_dir ~= "" then
+        argv[#argv + 1] = "--vc-tools-install-dir"
+        argv[#argv + 1] = opts.vc_tools_install_dir
+    end
+    argv[#argv + 1] = "--merge-defaults"
     argv[#argv + 1] = "-o"
     argv[#argv + 1] = opts.outpath
     if opts.deduplicate ~= false then
@@ -208,6 +265,9 @@ function M.generate(opts)
         return false
     end
 
+    local vc_tools_install_dir = opts.vc_tools_install_dir
+        or (opts.vs_path and opts.vs_path ~= "" and find_vc_tools_install_dir(opts.vs_path))
+
     local n = #all_slns
     local pool_size = (opts.jobs and opts.jobs > 0) and opts.jobs or n
     cc_info(
@@ -269,6 +329,7 @@ function M.generate(opts)
                 deduplicate = cc.deduplicate,
                 extra_args = cc.extra_args,
                 vs_path = opts.vs_path,
+                vc_tools_install_dir = vc_tools_install_dir,
             })
             cc_debug("argv[%d/%d] = %s", i, n, vim.inspect(argv))
             local ok_spawn, err = pcall(function()
@@ -332,6 +393,7 @@ end
 
 M._internal = {
     build_argv = build_argv,
+    find_vc_tools_install_dir = find_vc_tools_install_dir,
     resolve_outpath = resolve_outpath,
     resolve_anchor = resolve_anchor,
     collect_builddir_slns = collect_builddir_slns,

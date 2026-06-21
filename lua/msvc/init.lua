@@ -169,14 +169,6 @@ function Msvc:set_solution(path)
     self.project = nil
     self:_load_context(new_solution, nil)
 
-    if new_solution then
-        local install = self:resolve_install()
-        self:_run_compile_commands(
-            self.settings,
-            install and install.installationPath
-        )
-    end
-
     return true
 end
 

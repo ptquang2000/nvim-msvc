@@ -15,7 +15,7 @@ describe("msvc.compile_commands", function()
         assert.is_false(CC.is_enabled({ enabled = false }))
     end)
 
-    it("build_argv serializes solution + flags, no --project, no --merge", function()
+    it("build_argv serializes solution + flags, no --project, always --merge-defaults", function()
         local argv = CC._internal.build_argv({
             extractor = "extractor.exe",
             solution = "C:\\foo.sln",
@@ -31,12 +31,56 @@ describe("msvc.compile_commands", function()
         assert.is_truthy(f("extractor.exe"))
         assert.is_truthy(f("--solution|C:\\foo.sln"))
         assert.is_falsy(f("--project"))
-        assert.is_falsy(f("--merge"))
+        assert.is_truthy(f("--merge-defaults"))
         assert.is_truthy(f("-c|Release"))
         assert.is_truthy(f("-a|Win32"))
         assert.is_truthy(f("--vs-path|C:\\VS\\2022"))
         assert.is_truthy(f("-o|C:\\out\\compile_commands.json"))
         assert.is_truthy(f("--deduplicate"))
+    end)
+
+    it("build_argv includes --vc-tools-install-dir when provided", function()
+        local argv = CC._internal.build_argv({
+            extractor = "extractor.exe",
+            solution = "C:\\foo.sln",
+            outpath = "C:\\out\\compile_commands.json",
+            vs_path = "C:\\VS\\2022",
+            vc_tools_install_dir = "C:\\VS\\2022\\VC\\Tools\\MSVC\\14.39.33519",
+        })
+        local s = table.concat(argv, "|")
+        local f = function(needle) return s:find(needle, 1, true) end
+        assert.is_truthy(f("--vc-tools-install-dir|C:\\VS\\2022\\VC\\Tools\\MSVC\\14.39.33519"))
+    end)
+
+    it("build_argv omits --vc-tools-install-dir when nil or empty", function()
+        local argv_nil = CC._internal.build_argv({
+            extractor = "extractor.exe",
+            solution = "C:\\foo.sln",
+            outpath = "C:\\out\\compile_commands.json",
+            vc_tools_install_dir = nil,
+        })
+        local argv_empty = CC._internal.build_argv({
+            extractor = "extractor.exe",
+            solution = "C:\\foo.sln",
+            outpath = "C:\\out\\compile_commands.json",
+            vc_tools_install_dir = "",
+        })
+        assert.is_falsy(table.concat(argv_nil, "|"):find("--vc-tools-install-dir", 1, true))
+        assert.is_falsy(table.concat(argv_empty, "|"):find("--vc-tools-install-dir", 1, true))
+    end)
+
+    describe("find_vc_tools_install_dir", function()
+        it("returns nil for nil input", function()
+            assert.is_nil(CC._internal.find_vc_tools_install_dir(nil))
+        end)
+
+        it("returns nil for empty string input", function()
+            assert.is_nil(CC._internal.find_vc_tools_install_dir(""))
+        end)
+
+        it("returns nil for non-existent base path", function()
+            assert.is_nil(CC._internal.find_vc_tools_install_dir("C:\\does\\not\\exist\\vs"))
+        end)
     end)
 
     it("resolve_anchor falls back to project / cwd", function()

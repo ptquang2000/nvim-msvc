@@ -582,7 +582,7 @@ describe("msvc.ui", function()
         Discover.parse_solution_projects = orig
         local sep_pos, proj_pos = nil, nil
         for i, e in ipairs(entries) do
-            if e.entity.type == UI._ENT.SEPARATOR then sep_pos = i end
+            if e.entity.type == UI._ENT.SEPARATOR and sep_pos == nil then sep_pos = i end
             if e.entity.type == UI._ENT.PROJECT and e.entity.name == "MyProj" then
                 proj_pos = i
             end

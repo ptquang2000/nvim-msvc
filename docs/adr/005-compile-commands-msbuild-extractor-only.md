@@ -68,16 +68,44 @@ files are deleted regardless of outcome.
 If any extractor process exits non-zero, the merge step is skipped and temp files are
 cleaned up. The `on_done` callback receives `false`.
 
-### Trigger generation on solution selection
+### Explicit generation via msvc:// action page
 
-`Msvc:set_solution` calls `_run_compile_commands` after `_load_context` completes,
-immediately after a solution is selected — in addition to the existing post-build trigger.
-This ensures `compile_commands.json` is generated for a freshly opened workspace without
-requiring the user to run a build first.
+Generation is triggered from the normal-mode `msvc://` buffer by pressing `g`. The `[g]`
+action entry is shown only when `cc.enabled` is not false. Pressing `g` calls
+`_run_compile_commands` on the singleton, which resolves the VS install path and spawns the
+extractor pool.
 
-`resolve_install()` is called inside `set_solution` to obtain the VS install path for
-`--vs-path`. If no VS installation is found, `install_path` is nil and `--vs-path` is
-omitted from the extractor argv; the extractor will attempt its own MSBuild discovery.
+The previous auto-trigger on solution selection (`set_solution` calling
+`_run_compile_commands`) is removed. Generation now only fires when the user explicitly
+requests it, avoiding silent background extraction on every solution switch.
+
+### `--merge-defaults` always passed
+
+Per-file `<PrecompiledHeader>` overrides (`NotUsing`/`Use`/`Create`) cause MSBuild to split
+source files into separate `GetClCommandLines` batches. Entries in non-default batches omit
+all `ItemDefinitionGroup`-inherited flags (include paths, preprocessor defines, language
+standard) unless the extractor backfills them. Passing `--merge-defaults` instructs the
+extractor to run `MergeDefaultFlags`, which is additive (only adds flags not already present)
+and safe to pass unconditionally. CMake-generated vcxprojs are unaffected (single batch).
+
+### `--deduplicate` strips warning and optimization flags (side effect)
+
+`CompileCommandDeduplicator.CleanSingleEntry` strips `/W*`, `/WX`, `/wd*`, `/we*`,
+`/external:W*`, `/O1`, `/O2`, `/Od`, `/Ob*`, `/GL`, `/Gw` from every entry — including
+non-duplicated files. This is a side effect of passing `--deduplicate`, not just
+deduplication. The stripped flags are acceptable for IntelliSense use (clangd neither
+enforces warnings nor requires optimization flags) but make the output unsuitable for build
+reproduction. Do not add these flags back as a "fix."
+
+### `--vc-tools-install-dir` derived from selected VS installation
+
+The extractor's auto-detection uses `vswhere -latest` (no version constraint). On machines
+with multiple VS versions installed, this disagrees with the version-constrained `--vs-path`
+the plugin passes. The plugin owns VS selection (via `resolve_install` / `vs_version`), so it
+also owns deriving `VCToolsInstallDir`: scan `{installationPath}\VC\Tools\MSVC\*`, pick the
+highest version directory by numeric component comparison, and pass as
+`--vc-tools-install-dir`. This guarantees `--vs-path` and `--vc-tools-install-dir` always
+reference the same installation.
 
 ## Consequences
 
@@ -88,9 +116,9 @@ omitted from the extractor argv; the extractor will attempt its own MSBuild disc
 - The `cc.merge` config field no longer has effect on individual extractor runs (each run
   writes to a fresh temp file). It is kept in the schema for backwards compatibility but is
   effectively ignored; the final output is always written fresh.
-- Generation fires on solution selection, which means vswhere is invoked synchronously at
-  that point. This is acceptable — vswhere is fast and is already invoked synchronously
-  elsewhere in the build path.
+- Generation fires only when the user explicitly presses `g` in the `msvc://` buffer.
+  vswhere is invoked synchronously at that point via `resolve_install`, which is acceptable —
+  vswhere is fast and is already invoked synchronously elsewhere in the build path.
 - Users with `cc.builddir` set to a CMake build tree will now have their sub-solutions
   extracted in parallel instead of sequentially, which is faster for large trees.
 - `Discover.find_slns` is a new public function on `discover.lua`; `find_vcxprojs` is
