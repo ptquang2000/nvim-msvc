@@ -332,13 +332,16 @@ function M.generate(opts)
                 vc_tools_install_dir = vc_tools_install_dir,
             })
             cc_debug("argv[%d/%d] = %s", i, n, vim.inspect(argv))
+            cc_info("[%d/%d] starting: %s", i, n, Util.basename(sln))
             local ok_spawn, err = pcall(function()
                 vim.system(argv, { text = true }, function(res)
                     vim.schedule(function()
                         active = active - 1
                         completed = completed + 1
                         local ok = res and res.code == 0
-                        if not ok then
+                        if ok then
+                            cc_info("[%d/%d] done: %s", i, n, Util.basename(sln))
+                        else
                             all_ok = false
                             cc_error(
                                 "[%d/%d] extractor exit %d for %s%s",

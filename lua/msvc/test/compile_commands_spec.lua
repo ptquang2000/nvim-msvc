@@ -92,6 +92,100 @@ describe("msvc.compile_commands", function()
         )
     end)
 
+    describe("per-solution log lines in generate", function()
+        local Log
+
+        before_each(function()
+            Log = require("msvc.log")
+        end)
+
+        it("emits [i/n] starting: and [i/n] done: for each solution", function()
+            local appended = {}
+            local orig_append = Log.build_append
+            Log.build_append = function(_, msg, ...)
+                appended[#appended + 1] = msg:format(...)
+            end
+
+            -- Stub vim.system to succeed immediately (synchronously via schedule)
+            local orig_system = vim.system
+            vim.system = function(_, _, cb)
+                vim.schedule(function() cb({ code = 0, stderr = "" }) end)
+                return { pid = 1 }
+            end
+
+            CC.reset_cache()
+            CC._extractor_path = "/fake/extractor"
+
+            local called_done = false
+            CC.generate({
+                solution = "/fake/A.sln",
+                configuration = "Debug",
+                platform = "x64",
+                cc = { enabled = true },
+                vs_path = "",
+                on_done = function() called_done = true end,
+            })
+
+            vim.wait(500, function() return called_done end, 10)
+
+            Log.build_append = orig_append
+            vim.system = orig_system
+
+            local has_starting = false
+            local has_done = false
+            for _, line in ipairs(appended) do
+                if line:find("%[1/1%] starting: A%.sln") then has_starting = true end
+                if line:find("%[1/1%] done: A%.sln") then has_done = true end
+            end
+            assert.is_true(has_starting, "must emit [1/1] starting: A.sln")
+            assert.is_true(has_done, "must emit [1/1] done: A.sln")
+        end)
+
+        it("emits [i/n] extractor error line on failure, no done line", function()
+            local appended = {}
+            local orig_append = Log.build_append
+            Log.build_append = function(_, msg, ...)
+                appended[#appended + 1] = msg:format(...)
+            end
+
+            local orig_system = vim.system
+            vim.system = function(_, _, cb)
+                vim.schedule(function() cb({ code = 1, stderr = "fatal error" }) end)
+                return { pid = 1 }
+            end
+
+            CC.reset_cache()
+            CC._extractor_path = "/fake/extractor"
+
+            local called_done = false
+            CC.generate({
+                solution = "/fake/B.sln",
+                configuration = "Debug",
+                platform = "x64",
+                cc = { enabled = true },
+                vs_path = "",
+                on_done = function() called_done = true end,
+            })
+
+            vim.wait(500, function() return called_done end, 10)
+
+            Log.build_append = orig_append
+            vim.system = orig_system
+
+            local has_starting = false
+            local has_done = false
+            local has_error = false
+            for _, line in ipairs(appended) do
+                if line:find("%[1/1%] starting: B%.sln") then has_starting = true end
+                if line:find("%[1/1%] done: B%.sln") then has_done = true end
+                if line:find("extractor exit") then has_error = true end
+            end
+            assert.is_true(has_starting, "must emit starting line even on failure")
+            assert.is_false(has_done, "must NOT emit done line on failure")
+            assert.is_true(has_error, "must emit error line on failure")
+        end)
+    end)
+
     it("merge_temp_files combines entries and deduplicates by file", function()
         local tmp1 = os.tmpname() .. ".json"
         local tmp2 = os.tmpname() .. ".json"

@@ -482,6 +482,174 @@ describe("msvc.init — _compute_sln_mtime and compile_commands dirty check", fu
     end)
 end)
 
+describe("msvc.init — build on_done auto-cc", function()
+    local Msvc, Util, Build, CompileCommands
+    local tmpdir
+
+    before_each(function()
+        helpers.reset_init_only()
+        Msvc = require("msvc")
+        Util = require("msvc.util")
+        Build = require("msvc.build")
+        CompileCommands = require("msvc.compile_commands")
+        tmpdir = vim.fn.tempname()
+        vim.fn.mkdir(tmpdir, "p")
+        Msvc._cc_fingerprints = {}
+        Msvc.config = { settings = { compile_commands = { enabled = true } } }
+    end)
+
+    after_each(function()
+        if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+            vim.fn.delete(tmpdir, "rf")
+        end
+    end)
+
+    local function make_file(path)
+        vim.fn.mkdir(Util.dirname(path), "p")
+        local fh = io.open(path, "wb"); fh:write(""); fh:close()
+    end
+
+    local function stub_spawn(on_done_holder)
+        local orig = Build.spawn
+        Build.spawn = function(opts)
+            on_done_holder.fn = opts.on_done
+            on_done_holder.target = opts.target
+            return true
+        end
+        return function() Build.spawn = orig end
+    end
+
+    it("build() on success calls _run_compile_commands with dispatch-time settings", function()
+        local sln = Util.join_path(tmpdir, "A.sln")
+        local msbuild = Util.join_path(tmpdir, "MSBuild.exe")
+        make_file(sln); make_file(msbuild)
+        Msvc.solutions = { sln }
+        Msvc.solution = sln
+        Msvc.settings = { configuration = "Debug", platform = "x64", jobs = 4 }
+        local fake_install = { installationPath = tmpdir }
+        Msvc.install = fake_install
+
+        local on_done_holder = {}
+        local restore = stub_spawn(on_done_holder)
+
+        local orig_devenv = require("msvc.devenv")
+        local orig_find = orig_devenv.find_msbuild
+        orig_devenv.find_msbuild = function(_) return msbuild end
+
+        local captured_settings, captured_install_path
+        local orig_run = Msvc._run_compile_commands
+        Msvc._run_compile_commands = function(self_arg, s, ip)
+            captured_settings = s
+            captured_install_path = ip
+        end
+
+        Msvc:build()
+        assert.is_truthy(on_done_holder.fn, "Build.spawn must receive on_done")
+        on_done_holder.fn(true)
+
+        orig_devenv.find_msbuild = orig_find
+        Msvc._run_compile_commands = orig_run
+        restore()
+
+        assert.is_truthy(captured_settings, "_run_compile_commands must be called on success")
+        assert.are.equal("Debug", captured_settings.configuration)
+        assert.are.equal(tmpdir, captured_install_path)
+    end)
+
+    it("build('Clean') does NOT call _run_compile_commands on success", function()
+        local sln = Util.join_path(tmpdir, "B.sln")
+        local msbuild = Util.join_path(tmpdir, "MSBuild.exe")
+        make_file(sln); make_file(msbuild)
+        Msvc.solutions = { sln }
+        Msvc.solution = sln
+        Msvc.settings = { configuration = "Release", platform = "x64" }
+        Msvc.install = { installationPath = tmpdir }
+
+        local on_done_holder = {}
+        local restore = stub_spawn(on_done_holder)
+
+        local orig_devenv = require("msvc.devenv")
+        local orig_find = orig_devenv.find_msbuild
+        orig_devenv.find_msbuild = function(_) return msbuild end
+
+        local cc_called = false
+        local orig_run = Msvc._run_compile_commands
+        Msvc._run_compile_commands = function() cc_called = true end
+
+        Msvc:build("Clean")
+        assert.is_truthy(on_done_holder.fn)
+        on_done_holder.fn(true)
+
+        orig_devenv.find_msbuild = orig_find
+        Msvc._run_compile_commands = orig_run
+        restore()
+
+        assert.is_false(cc_called, "_run_compile_commands must NOT be called for Clean")
+    end)
+
+    it("build() on failure does NOT call _run_compile_commands", function()
+        local sln = Util.join_path(tmpdir, "C.sln")
+        local msbuild = Util.join_path(tmpdir, "MSBuild.exe")
+        make_file(sln); make_file(msbuild)
+        Msvc.solutions = { sln }
+        Msvc.solution = sln
+        Msvc.settings = { configuration = "Debug", platform = "x64" }
+        Msvc.install = { installationPath = tmpdir }
+
+        local on_done_holder = {}
+        local restore = stub_spawn(on_done_holder)
+
+        local orig_devenv = require("msvc.devenv")
+        local orig_find = orig_devenv.find_msbuild
+        orig_devenv.find_msbuild = function(_) return msbuild end
+
+        local cc_called = false
+        local orig_run = Msvc._run_compile_commands
+        Msvc._run_compile_commands = function() cc_called = true end
+
+        Msvc:build()
+        assert.is_truthy(on_done_holder.fn)
+        on_done_holder.fn(false)  -- build failed
+
+        orig_devenv.find_msbuild = orig_find
+        Msvc._run_compile_commands = orig_run
+        restore()
+
+        assert.is_false(cc_called, "_run_compile_commands must NOT be called on failure")
+    end)
+
+    it("build('Rebuild') on success calls _run_compile_commands", function()
+        local sln = Util.join_path(tmpdir, "D.sln")
+        local msbuild = Util.join_path(tmpdir, "MSBuild.exe")
+        make_file(sln); make_file(msbuild)
+        Msvc.solutions = { sln }
+        Msvc.solution = sln
+        Msvc.settings = { configuration = "Release", platform = "x64" }
+        Msvc.install = { installationPath = tmpdir }
+
+        local on_done_holder = {}
+        local restore = stub_spawn(on_done_holder)
+
+        local orig_devenv = require("msvc.devenv")
+        local orig_find = orig_devenv.find_msbuild
+        orig_devenv.find_msbuild = function(_) return msbuild end
+
+        local cc_called = false
+        local orig_run = Msvc._run_compile_commands
+        Msvc._run_compile_commands = function() cc_called = true end
+
+        Msvc:build("Rebuild")
+        assert.is_truthy(on_done_holder.fn)
+        on_done_holder.fn(true)
+
+        orig_devenv.find_msbuild = orig_find
+        Msvc._run_compile_commands = orig_run
+        restore()
+
+        assert.is_true(cc_called, "_run_compile_commands must be called for Rebuild success")
+    end)
+end)
+
 describe("msvc.init — build dispatches with fixture solutions", function()
     local Msvc, Config, Util, Build
     local FIXTURES = "tests/fixtures"

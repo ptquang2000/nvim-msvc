@@ -230,6 +230,11 @@ function Msvc:build(target_override)
         jobs = s.jobs,
         solution_dir = solution_dir,
         target = target_override,
+        on_done = function(success)
+            if success and target_override ~= "Clean" then
+                self:_run_compile_commands(s, install_path)
+            end
+        end,
     })
 end
 

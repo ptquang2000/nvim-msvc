@@ -299,6 +299,7 @@ local function setup_autocmds(msvc, buf)
                 render(msvc, buf)
                 return
             end
+            Log:reset_build(("-- %s --"):format(_target))
             local ok
             if _target == "build" then
                 ok = msvc:build()

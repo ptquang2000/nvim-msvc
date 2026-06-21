@@ -155,6 +155,16 @@ local function reset_buf(buf, banner)
     vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
 end
 
+--- Wipe buffer content and open the live-build window.
+--- This is the only path that clears the buffer — called from ui.lua on `:w`.
+function MsvcLog:reset_build(banner)
+    local buf = ensure_live_buf(self)
+    reset_buf(buf, banner)
+    vim.schedule(function()
+        ensure_live_win(self)
+    end)
+end
+
 --- Open / focus the build log window.
 function MsvcLog:show_build()
     local buf = ensure_live_buf(self)
@@ -190,8 +200,6 @@ function MsvcLog:install_live_tail()
     Ext.extensions:add_listener({
         [Ext.event_names.BUILD_START] = function()
             vim.schedule(function()
-                local buf = ensure_live_buf(self)
-                reset_buf(buf, "-- build started --")
                 ensure_live_win(self)
             end)
         end,
