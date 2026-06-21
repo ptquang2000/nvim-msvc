@@ -4,7 +4,6 @@
 local Util = require("msvc.util")
 local Log = require("msvc.log")
 local DevEnv = require("msvc.devenv")
-local QuickFix = require("msvc.quickfix")
 local Ext = require("msvc.extensions")
 
 local M = {}
@@ -131,13 +130,6 @@ function M.spawn(opts)
             local elapsed_ms = math.floor((vim.uv.hrtime() - started_at) / 1e6)
             local code = res and res.code or -1
             local success = (not job.cancelled) and code == 0
-            local _ = QuickFix.from_build_output(job.lines, {
-                title = ("MSBuild [%s|%s]"):format(
-                    opts.configuration,
-                    opts.platform
-                ),
-                open = true,
-            })
             Ext.extensions:emit(
                 Ext.event_names.BUILD_DONE,
                 success,

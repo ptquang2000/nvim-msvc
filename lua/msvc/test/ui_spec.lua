@@ -1215,6 +1215,20 @@ describe("msvc.ui", function()
             assert.are.equal("build", UI._get_target())
         end)
 
+        it("g key sets _target to 'generate'", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "normal")
+            feed("g")
+            assert.are.equal("generate", UI._get_target())
+        end)
+
+        it("g key is a no-op in add mode", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "add", {})
+            feed("g")
+            assert.are.equal("build", UI._get_target())
+        end)
+
         -- ─── BufWriteCmd in add mode ─────────────────────────────────────────
 
         local function setup_autocmd_buf(msvc, mode)

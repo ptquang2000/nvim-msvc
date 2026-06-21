@@ -169,6 +169,18 @@ function Msvc:set_solution(path)
     self.project = nil
     self:_load_context(new_solution, nil)
 
+    if new_solution ~= nil then
+        if self.settings.configuration == nil or self.settings.platform == nil then
+            local targets = Discover.discover_targets(new_solution, nil)
+            if self.settings.configuration == nil then
+                self.settings.configuration = targets.configurations[1]
+            end
+            if self.settings.platform == nil then
+                self.settings.platform = targets.platforms[1]
+            end
+        end
+    end
+
     return true
 end
 

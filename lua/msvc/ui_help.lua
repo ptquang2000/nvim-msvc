@@ -14,6 +14,7 @@ local HELP_LINES = {
     "    c     clean",
     "    r     rebuild",
     "    f     single-file compile  (project must be pinned; file = buffer at open time)",
+    "    g     generate compile_commands.json",
     "",
     "  Confirm / cancel",
     "    :w    fire the staged action → close buffer → open log",

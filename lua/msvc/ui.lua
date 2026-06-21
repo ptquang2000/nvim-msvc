@@ -3,7 +3,6 @@
 local Log = require("msvc.log")
 local Discover = require("msvc.discover")
 local Util = require("msvc.util")
-local CompileCommands = require("msvc.compile_commands")
 
 local M = {}
 
@@ -23,7 +22,6 @@ local ENT = {
     STAGED_HEADER = "staged_header",
     UNSTAGED_HEADER = "unstaged_header",
     SOLUTION_UNSTAGED = "solution_unstaged",
-    CC_GENERATE = "cc_generate",
 }
 
 local HL_NS = vim.api.nvim_create_namespace("MsvcUI")
@@ -188,13 +186,6 @@ local function build_entries(msvc)
             end
         end
 
-        local cc = (msvc.config and msvc.config.settings and msvc.config.settings.compile_commands) or {}
-        if CompileCommands.is_enabled(cc) then
-            add("", { type = ENT.BLANK })
-            add(string.rep("─", 40), { type = ENT.SEPARATOR })
-            add("", { type = ENT.BLANK })
-            add("  [g] Generate compile_commands.json", { type = ENT.CC_GENERATE })
-        end
     end
 
     return entries
@@ -299,7 +290,15 @@ local function setup_autocmds(msvc, buf)
                 render(msvc, buf)
                 return
             end
-            Log:reset_build(("-- %s --"):format(_target))
+            if _target == "generate" then
+                local install = msvc:resolve_install()
+                msvc:_run_compile_commands(msvc.settings, install and install.installationPath)
+                if vim.api.nvim_buf_is_valid(buf) then
+                    vim.api.nvim_buf_delete(buf, { force = true })
+                end
+                Log:show_build()
+                return
+            end
             local ok
             if _target == "build" then
                 ok = msvc:build()
@@ -311,6 +310,7 @@ local function setup_autocmds(msvc, buf)
                 ok = msvc:build_file(_source_file)
             end
             if ok ~= false then
+                Log:reset_build(("-- %s --"):format(_target))
                 if vim.api.nvim_buf_is_valid(buf) then
                     vim.api.nvim_buf_delete(buf, { force = true })
                 end
@@ -499,9 +499,9 @@ local function setup_keymaps(msvc, buf)
         end
     end)
     map("g", function()
-        if _mode ~= "normal" then return end
-        local install = msvc:resolve_install()
-        msvc:_run_compile_commands(msvc.settings, install and install.installationPath)
+        if _mode == "add" then return end
+        _target = "generate"
+        render(msvc, buf)
     end)
     map("l", function()
         Log:show_build()

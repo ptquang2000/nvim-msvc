@@ -250,6 +250,30 @@ describe("msvc.init — set_solution / set_project", function()
         assert.are.equal(Util.normalize_path(sln), Msvc.solution)
     end)
 
+    it("set_solution auto-populates configuration and platform when context has no stored settings", function()
+        local sln = Util.join_path(tmpdir, "fresh.sln")
+        local fh = io.open(sln, "wb"); fh:write(""); fh:close()
+        local sln_norm = Util.normalize_path(sln)
+        Msvc.solutions = { sln_norm }
+        Msvc:set_solution(sln_norm)
+        assert.is_not_nil(Msvc.settings.configuration)
+        assert.is_not_nil(Msvc.settings.platform)
+    end)
+
+    it("set_solution preserves stored configuration and platform when context exists", function()
+        local sln = Util.join_path(tmpdir, "stored.sln")
+        local fh = io.open(sln, "wb"); fh:write(""); fh:close()
+        local sln_norm = Util.normalize_path(sln)
+        Msvc._context_store[sln_norm .. "\0"] = {
+            configuration = "MyConfig", platform = "MyPlatform",
+            arch = "x64", vs_version = "latest", jobs = 6,
+        }
+        Msvc.solutions = { sln_norm }
+        Msvc:set_solution(sln_norm)
+        assert.are.equal("MyConfig", Msvc.settings.configuration)
+        assert.are.equal("MyPlatform", Msvc.settings.platform)
+    end)
+
     -- ─── set_project ──────────────────────────────────────────────────────────
 
     it("set_project(nil) clears project and returns true", function()
