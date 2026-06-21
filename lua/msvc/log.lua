@@ -114,7 +114,7 @@ local function ensure_live_win(self)
         end
     end
     local prev = vim.api.nvim_get_current_win()
-    vim.cmd("botright vsplit")
+    vim.cmd("botright split")
     local win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(win, buf)
     if vim.api.nvim_win_is_valid(prev) then
