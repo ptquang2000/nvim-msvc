@@ -14,7 +14,7 @@ There are no subcommands to memorise beyond opening it.
   (`vcvarsall.bat`, `MSBuild.exe`, `cl.exe`, `link.exe`).
 - `vswhere.exe` (ships with VS 2017 Update 2+).
 - *Optional:* [`msbuild-extractor-sample`](https://github.com/microsoft/msbuild-extractor-sample)
-  on `PATH` — auto-generates `compile_commands.json` on solution selection.
+  on `PATH` — auto-generates `compile_commands.json` and `.clangd` after every successful build.
 
 ## Installation
 
@@ -27,7 +27,7 @@ There are no subcommands to memorise beyond opening it.
     config = function()
         require("msvc").setup({
             settings = {
-                compile_commands = { outdir = "bin", builddir = "bin/cmake" },
+                compile_commands = { builddir = "bin/cmake" },
             },
             default_settings = {
                 arch = "x64",
@@ -62,10 +62,12 @@ Two top-level keys:
 |----------------|----------|---------------|-----------------------------------------------|
 | `enabled`      | boolean  | `true`        | Enable/disable generation                     |
 | `builddir`     | string   | `"bin/cmake"` | `--build-dir` passed to the extractor         |
-| `outdir`       | string   | `"bin"`       | Output directory for `compile_commands.json`  |
-| `merge`        | boolean  | `true`        | Merge with an existing file                   |
-| `deduplicate`  | boolean  | `true`        | Remove duplicate entries                      |
+| `deduplicate`  | boolean  | `true`        | Remove duplicate entries across solutions     |
 | `extra_args`   | string[] | `{}`          | Additional extractor arguments                |
+
+`compile_commands.json` is written next to the active `.sln`. A `.clangd` config is
+written to the same directory with MSVC-incompatible flags stripped and project
+preprocessor defines injected (when a project is pinned).
 
 ### `default_settings`
 
@@ -84,13 +86,13 @@ overridable per-context from the `msvc://` buffer.
 
 | Command            | Description                                            |
 |--------------------|--------------------------------------------------------|
-| `:Msvc`            | Open the `msvc://` buffer (discovery if no solutions registered) |
+| `:Msvc`            | Open the `msvc://` buffer                              |
 | `:Msvc add [path]` | Register a `.sln` file; no path opens discovery mode   |
 | `:Msvc cancel`     | Cancel the in-flight build                             |
 | `:Msvc log`        | Open the live build-log buffer                         |
 
-`:Msvc` with no solutions registered behaves identically to `:Msvc add` — it opens
-discovery mode automatically.
+`:Msvc` dispatch: 0 registered solutions → discovery/add mode; 1 solution → normal mode;
+2+ solutions → add mode to choose the active one.
 
 ## msvc:// buffer
 
@@ -125,8 +127,9 @@ Help: h?
 | `c`  | Set target to `clean`                                           |
 | `r`  | Set target to `rebuild`                                         |
 | `f`  | Set target to `compile_file` (requires a pinned project)        |
+| `g`  | Set target to `generate` (compile_commands + .clangd only, no build) |
 | `=`  | Expand field options; collapse if cursor is on an option line   |
-| `-`  | On a project line: select / deselect. On an option: apply value |
+| `-`  | On a project line: pin / unpin. On an option: apply value       |
 | `:w` | Fire the current target against `(solution, project)`           |
 | `l`  | Open log buffer                                                 |
 | `x`  | Cancel in-flight build                                          |
