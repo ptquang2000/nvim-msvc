@@ -547,6 +547,182 @@ describe("msvc.compile_commands", function()
         end)
     end)
 
+    describe("generate_clangd build-order define union", function()
+        local tmpdir
+
+        before_each(function()
+            tmpdir = vim.fn.tempname()
+            vim.fn.mkdir(tmpdir, "p")
+        end)
+
+        after_each(function()
+            if tmpdir and vim.fn.isdirectory(tmpdir) == 1 then
+                vim.fn.delete(tmpdir, "rf")
+            end
+        end)
+
+        local function read_clangd(dir)
+            local Util = require("msvc.util")
+            local f = io.open(Util.join_path(dir, ".clangd"), "r")
+            if not f then return nil end
+            local c = f:read("*a")
+            f:close()
+            return c
+        end
+
+        -- Write a .vcxproj with a single Debug|x64 PreprocessorDefinitions list.
+        local function write_proj(path, defs)
+            local fh = io.open(path, "wb")
+            fh:write(table.concat({
+                "<Project>",
+                "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">",
+                "    <ClCompile>",
+                "      <PreprocessorDefinitions>" .. defs ..
+                    ";%(PreprocessorDefinitions)</PreprocessorDefinitions>",
+                "    </ClCompile>",
+                "  </ItemDefinitionGroup>",
+                "</Project>",
+            }, "\n"))
+            fh:close()
+        end
+
+        -- Write a .sln referencing the given { name = relpath } projects, in order.
+        local function write_sln(path, projects)
+            local fh = io.open(path, "wb")
+            fh:write("Microsoft Visual Studio Solution File, Format Version 12.00\n")
+            for _, p in ipairs(projects) do
+                fh:write(("Project(\"{GUID}\") = \"%s\", \"%s\", \"{P}\"\nEndProject\n")
+                    :format(p.name, p.rel))
+            end
+            fh:close()
+        end
+
+        it("emits Add as a union of all projects' defines even when none pinned", function()
+            local Util = require("msvc.util")
+            write_proj(Util.join_path(tmpdir, "A.vcxproj"), "DEF_A")
+            write_proj(Util.join_path(tmpdir, "B.vcxproj"), "DEF_B")
+            local sln = Util.join_path(tmpdir, "main.sln")
+            write_sln(sln, { { name = "A", rel = "A.vcxproj" }, { name = "B", rel = "B.vcxproj" } })
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                configuration = "Debug",
+                platform = "x64",
+                solutions = { sln },
+            })
+
+            local c = read_clangd(tmpdir)
+            assert.is_truthy(c:find("  Add:", 1, true))
+            assert.is_truthy(c:find("-DDEF_A", 1, true))
+            assert.is_truthy(c:find("-DDEF_B", 1, true))
+        end)
+
+        it("dedups conflicting macros by name, build-order-last wins", function()
+            local Util = require("msvc.util")
+            -- Two solutions both define SHARED with different values.
+            write_proj(Util.join_path(tmpdir, "Sub.vcxproj"), "SHARED=1")
+            write_proj(Util.join_path(tmpdir, "Main.vcxproj"), "SHARED=2")
+            local sub = Util.join_path(tmpdir, "sub.sln")
+            local main = Util.join_path(tmpdir, "main.sln")
+            write_sln(sub, { { name = "Sub", rel = "Sub.vcxproj" } })
+            write_sln(main, { { name = "Main", rel = "Main.vcxproj" } })
+
+            -- Build order = subs first, main last → main's SHARED=2 wins.
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                configuration = "Debug",
+                platform = "x64",
+                solutions = { sub, main },
+            })
+
+            local c = read_clangd(tmpdir)
+            -- Exactly one entry for SHARED, and it is =2.
+            local _, count = c:gsub("%-DSHARED", "")
+            assert.are.equal(1, count, "expected exactly one -DSHARED entry")
+            assert.is_truthy(c:find("-DSHARED=2", 1, true))
+            assert.is_falsy(c:find("-DSHARED=1", 1, true))
+        end)
+
+        it("pinned project's define overrides all others for the same macro", function()
+            local Util = require("msvc.util")
+            write_proj(Util.join_path(tmpdir, "Other.vcxproj"), "SHARED=2")
+            local pinned = Util.join_path(tmpdir, "Pinned.vcxproj")
+            write_proj(pinned, "SHARED=99")
+            local main = Util.join_path(tmpdir, "main.sln")
+            write_sln(main, {
+                { name = "Other", rel = "Other.vcxproj" },
+                { name = "Pinned", rel = "Pinned.vcxproj" },
+            })
+
+            CC._internal.generate_clangd({
+                outdir = tmpdir,
+                project = pinned,
+                configuration = "Debug",
+                platform = "x64",
+                solutions = { main },
+            })
+
+            local c = read_clangd(tmpdir)
+            local _, count = c:gsub("%-DSHARED", "")
+            assert.are.equal(1, count, "expected exactly one -DSHARED entry")
+            assert.is_truthy(c:find("-DSHARED=99", 1, true))
+        end)
+    end)
+
+    it("merge_temp_files keep-last: [subs…, main] order keeps main, later sub wins", function()
+        -- temp1 = sub-solution A, temp2 = sub-solution B, temp3 = main solution.
+        -- shared.cpp is in all three; among subs B (later) wins, then main wins overall.
+        local tmp1 = os.tmpname() .. ".json"
+        local tmp2 = os.tmpname() .. ".json"
+        local tmp3 = os.tmpname() .. ".json"
+        local out = os.tmpname() .. ".json"
+
+        local function w(path, cmd)
+            local f = io.open(path, "w")
+            f:write(vim.json.encode({
+                { file = "C:\\shared.cpp", command = cmd, directory = "C:\\" },
+            }))
+            f:close()
+        end
+        w(tmp1, "subA")
+        w(tmp2, "subB")
+        w(tmp3, "main")
+
+        local ok = CC._internal.merge_temp_files({ tmp1, tmp2, tmp3 }, out, true)
+        assert.is_true(ok)
+
+        local decoded = vim.json.decode(io.open(out, "r"):read("*a"))
+        assert.are.equal(1, #decoded)
+        assert.are.equal("main", decoded[1].command)
+
+        os.remove(out)
+    end)
+
+    it("merge_temp_files keep-last: among two subs the later-scanned entry wins", function()
+        local tmp1 = os.tmpname() .. ".json"
+        local tmp2 = os.tmpname() .. ".json"
+        local out = os.tmpname() .. ".json"
+
+        local function w(path, cmd)
+            local f = io.open(path, "w")
+            f:write(vim.json.encode({
+                { file = "C:\\shared.cpp", command = cmd, directory = "C:\\" },
+            }))
+            f:close()
+        end
+        w(tmp1, "subA")
+        w(tmp2, "subB")
+
+        local ok = CC._internal.merge_temp_files({ tmp1, tmp2 }, out, true)
+        assert.is_true(ok)
+
+        local decoded = vim.json.decode(io.open(out, "r"):read("*a"))
+        assert.are.equal(1, #decoded)
+        assert.are.equal("subB", decoded[1].command)
+
+        os.remove(out)
+    end)
+
     it("merge_temp_files combines entries and deduplicates by file", function()
         local tmp1 = os.tmpname() .. ".json"
         local tmp2 = os.tmpname() .. ".json"

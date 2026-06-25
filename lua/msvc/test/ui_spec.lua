@@ -1184,6 +1184,98 @@ describe("msvc.ui", function()
             assert.is_true(sols[sln:lower()] == true, "= on PROJECT in normal mode must not modify _expanded_solutions")
         end)
 
+        -- ─── = collapse repositions cursor onto title line (ADR 012) ────────
+
+        it("= on SETTINGS_OPTION moves cursor to parent SETTINGS_FIELD at first non-blank col", function()
+            local msvc = fake_msvc()
+            setup_keymap_buf(msvc, "normal")
+            UI._set_expanded_fields({ arch = true })
+            -- Re-render so SETTINGS_OPTION lines exist in the buffer + line map.
+            local entries = UI._build_entries(msvc)
+            local lines, new_lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                new_lm[i] = e.entity
+            end
+            local buf = UI._get_buf()
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            UI._set_line_map(new_lm)
+
+            -- Cursor on the last arch option line (several rows below the title).
+            local opt_line
+            for i, e in ipairs(new_lm) do
+                if e.type == UI._ENT.SETTINGS_OPTION and e.field == "arch" then
+                    opt_line = i
+                end
+            end
+            assert.is_truthy(opt_line, "SETTINGS_OPTION line not found")
+            vim.api.nvim_win_set_cursor(0, { opt_line, 0 })
+            feed("=")
+
+            -- After collapse the field line is found via the rebuilt line map.
+            local lm = UI._get_line_map()
+            local field_line
+            for i, e in ipairs(lm) do
+                if e.type == UI._ENT.SETTINGS_FIELD and e.field == "arch" then
+                    field_line = i
+                end
+            end
+            assert.is_truthy(field_line, "collapsed SETTINGS_FIELD line not found")
+            local cur = vim.api.nvim_win_get_cursor(0)
+            assert.are.equal(field_line, cur[1], "cursor should be on the arch field line")
+            local text = vim.api.nvim_buf_get_lines(buf, field_line - 1, field_line, false)[1]
+            assert.are.equal(text:find("%S") - 1, cur[2], "cursor should be at first non-blank column")
+        end)
+
+        it("= on add-mode PROJECT moves cursor to parent SOLUTION at first non-blank col", function()
+            local sln = burn_sln
+            local msvc = fake_msvc({ solutions = { sln } })
+            setup_keymap_buf(msvc, "add", {})
+            UI._set_expanded_solutions({ [sln:lower()] = true })
+            local Discover = require("msvc.discover")
+            local orig = Discover.parse_solution_projects
+            Discover.parse_solution_projects = function(_)
+                return { { name = "FakeProj", path = "/fake/F.vcxproj" } }
+            end
+            local entries = UI._build_entries(msvc)
+            Discover.parse_solution_projects = orig
+            local lines, new_lm = {}, {}
+            for i, e in ipairs(entries) do
+                lines[i] = e.text
+                new_lm[i] = e.entity
+            end
+            local buf = UI._get_buf()
+            vim.bo[buf].modifiable = true
+            vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+            vim.bo[buf].modifiable = false
+            UI._set_line_map(new_lm)
+
+            local proj_line
+            for i, e in ipairs(new_lm) do
+                if e.type == UI._ENT.PROJECT and e.name == "FakeProj" then
+                    proj_line = i
+                end
+            end
+            assert.is_truthy(proj_line, "PROJECT line not found")
+            vim.api.nvim_win_set_cursor(0, { proj_line, 0 })
+            feed("=")
+
+            local lm = UI._get_line_map()
+            local sln_line
+            for i, e in ipairs(lm) do
+                if e.type == UI._ENT.SOLUTION and e.path == sln then
+                    sln_line = i
+                end
+            end
+            assert.is_truthy(sln_line, "collapsed SOLUTION line not found")
+            local cur = vim.api.nvim_win_get_cursor(0)
+            assert.are.equal(sln_line, cur[1], "cursor should be on the solution line")
+            local text = vim.api.nvim_buf_get_lines(buf, sln_line - 1, sln_line, false)[1]
+            assert.are.equal(text:find("%S") - 1, cur[2], "cursor should be at first non-blank column")
+        end)
+
         -- ─── b/c/r/f are no-ops in add mode ─────────────────────────────────
 
         it("b key is a no-op in add mode", function()

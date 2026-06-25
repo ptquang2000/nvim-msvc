@@ -257,8 +257,35 @@ local CLANGD_REMOVE = {
     "/Wall",
 }
 
+--- Append a flag to `add_items`, deduplicating `-D` defines by macro name
+--- (the identifier before `=`). On a name collision the later value wins,
+--- replacing the earlier entry in place. Non-define flags (`-I…`) are appended
+--- unconditionally. `name_index` maps a macro name to its slot in `add_items`.
+--- See ADR 011: the union must stay name-keyed, never full-token.
+local function add_clangd_flag(add_items, name_index, flag)
+    local name = flag:match("^%-D([%w_]+)")
+    if name then
+        local slot = name_index[name]
+        if slot then
+            add_items[slot] = flag
+        else
+            add_items[#add_items + 1] = flag
+            name_index[name] = #add_items
+        end
+    else
+        add_items[#add_items + 1] = flag
+    end
+end
+
 --- Write a `.clangd` config file to `opts.outdir`.
---- `CompileFlags.Add` is omitted when no project is pinned or no defines are found.
+---
+--- `CompileFlags.Add` is a build-order union of every project's preprocessor
+--- defines across all solutions in `opts.solutions` (subs first, main last, in
+--- `.sln` declaration order), with the pinned `opts.project` layered last so it
+--- always wins (ADR 011). Defines are deduplicated by macro name — one `-D` per
+--- macro, later-in-build-order value wins. WDK toolchain flags (km include path,
+--- arch/OS defines) are still sourced from the pinned project. `Add` is omitted
+--- only when nothing at all is contributed.
 function M.generate_clangd(opts)
     local outdir = opts.outdir
     if not outdir or outdir == "" then
@@ -273,28 +300,54 @@ function M.generate_clangd(opts)
     for _, flag in ipairs(CLANGD_REMOVE) do
         lines[#lines + 1] = "    - " .. flag
     end
-    if opts.project and opts.project ~= "" and opts.configuration and opts.platform then
+    if opts.configuration and opts.platform then
         local add_items = {}
-        local toolchain = Discover.discover_vcxproj_toolchain(opts.project)
-        if toolchain.vcvars_ver and toolchain.vcvars_ver:lower():find("kernelmode", 1, true) then
-            local km = find_wdk_km_path(toolchain.winsdk)
-            if km then
-                add_items[#add_items + 1] = "-I" .. km
-            end
-            for _, d in ipairs(wdk_arch_defines(opts.platform)) do
-                add_items[#add_items + 1] = d
-            end
-            local winnt = wdk_win32_winnt(toolchain.winsdk)
-            if winnt then
-                add_items[#add_items + 1] = "-D_WIN32_WINNT=" .. winnt
-                add_items[#add_items + 1] = "-DWINVER=" .. winnt
+        local name_index = {}
+
+        -- WDK toolchain flags come from the pinned project only (toolchain, not
+        -- a define union): km include path + arch/OS defines for kernel mode.
+        if opts.project and opts.project ~= "" then
+            local toolchain = Discover.discover_vcxproj_toolchain(opts.project)
+            if toolchain.vcvars_ver and toolchain.vcvars_ver:lower():find("kernelmode", 1, true) then
+                local km = find_wdk_km_path(toolchain.winsdk)
+                if km then
+                    add_clangd_flag(add_items, name_index, "-I" .. km)
+                end
+                for _, d in ipairs(wdk_arch_defines(opts.platform)) do
+                    add_clangd_flag(add_items, name_index, d)
+                end
+                local winnt = wdk_win32_winnt(toolchain.winsdk)
+                if winnt then
+                    add_clangd_flag(add_items, name_index, "-D_WIN32_WINNT=" .. winnt)
+                    add_clangd_flag(add_items, name_index, "-DWINVER=" .. winnt)
+                end
             end
         end
-        local defines =
-            Discover.parse_vcxproj_defines(opts.project, opts.configuration, opts.platform)
-        for _, d in ipairs(defines) do
-            add_items[#add_items + 1] = d
+
+        -- Build-order union of defines across every project in every solution.
+        -- opts.solutions is already ordered subs-first, main-last; within each
+        -- solution projects keep .sln declaration order (never sort it — that
+        -- would silently change override semantics, see ADR 011).
+        for _, sln in ipairs(opts.solutions or {}) do
+            for _, proj in ipairs(Discover.parse_solution_projects(sln)) do
+                local defs = Discover.parse_vcxproj_defines(
+                    proj.path, opts.configuration, opts.platform
+                )
+                for _, d in ipairs(defs) do
+                    add_clangd_flag(add_items, name_index, d)
+                end
+            end
         end
+
+        -- Pinned project's defines applied last of all — always wins.
+        if opts.project and opts.project ~= "" then
+            local defines =
+                Discover.parse_vcxproj_defines(opts.project, opts.configuration, opts.platform)
+            for _, d in ipairs(defines) do
+                add_clangd_flag(add_items, name_index, d)
+            end
+        end
+
         if #add_items > 0 then
             lines[#lines + 1] = "  Add:"
             for _, item in ipairs(add_items) do
@@ -314,11 +367,13 @@ function M.generate_clangd(opts)
 end
 
 --- Read all temp files, merge their compile_commands arrays into outpath.
---- Deduplicates by `file` field when deduplicate is true.
+--- Deduplicates by `file` field when deduplicate is true, keeping the **last**
+--- occurrence (ADR 011). Callers pass temp_paths in `[subs…, main]` order, so
+--- the main solution wins ties and among sub-solutions the later-scanned wins.
 --- Cleans up temp files regardless of outcome.
 local function merge_temp_files(temp_paths, outpath, deduplicate)
     local entries = {}
-    local seen = {}
+    local index_of = {}  -- file key (lower) → slot in `entries`
     for _, tmp in ipairs(temp_paths) do
         local content = Util.read_file(tmp)
         if content and content ~= "" then
@@ -327,9 +382,14 @@ local function merge_temp_files(temp_paths, outpath, deduplicate)
                 for _, entry in ipairs(decoded) do
                     if type(entry) == "table" and type(entry.file) == "string" then
                         local key = entry.file:lower()
-                        if not deduplicate or not seen[key] then
-                            seen[key] = true
+                        local slot = deduplicate and index_of[key]
+                        if slot then
+                            entries[slot] = entry  -- keep-last: overwrite in place
+                        else
                             entries[#entries + 1] = entry
+                            if deduplicate then
+                                index_of[key] = #entries
+                            end
                         end
                     end
                 end
@@ -418,10 +478,26 @@ function M.generate(opts)
     local active = 0
     local next_idx = 1
 
+    -- Build-order solution list (ADR 011): sub-solutions first in scan order,
+    -- main solution last. all_slns[1] is the main solution; [2..] are subs.
+    local build_order_slns = {}
+    for i = 2, n do
+        build_order_slns[#build_order_slns + 1] = all_slns[i]
+    end
+    build_order_slns[#build_order_slns + 1] = all_slns[1]
+
+    -- Temp files in the same [subs…, main] order so keep-last dedup lets the
+    -- main solution win ties and the later-scanned sub-solution win among subs.
+    local merge_order_temps = {}
+    for i = 2, n do
+        merge_order_temps[#merge_order_temps + 1] = temp_paths[i]
+    end
+    merge_order_temps[#merge_order_temps + 1] = temp_paths[1]
+
     local function finish(success)
         if success then
             local ok, err =
-                merge_temp_files(temp_paths, outpath, cc.deduplicate ~= false)
+                merge_temp_files(merge_order_temps, outpath, cc.deduplicate ~= false)
             if ok then
                 cc_info("wrote %s", outpath)
                 M.generate_clangd({
@@ -429,6 +505,7 @@ function M.generate(opts)
                     project = opts.project,
                     configuration = opts.configuration,
                     platform = opts.platform,
+                    solutions = build_order_slns,
                 })
             else
                 cc_error("merge failed: %s", tostring(err))

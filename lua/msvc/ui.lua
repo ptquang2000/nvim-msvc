@@ -273,6 +273,24 @@ local function entity_at_cursor()
     return _line_map[row]
 end
 
+--- After a collapse + render, move the cursor to the title line of the
+--- collapsed list (ADR 012). `pred(entity)` identifies that title line in the
+--- freshly rebuilt `_line_map`; the cursor lands at the first non-blank column.
+local function cursor_to_title(buf, pred)
+    if not buf or not vim.api.nvim_buf_is_valid(buf) then
+        return
+    end
+    for row, ent in ipairs(_line_map) do
+        if pred(ent) then
+            local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+            local first = line:find("%S")
+            local col = first and (first - 1) or 0
+            pcall(vim.api.nvim_win_set_cursor, 0, { row, col })
+            return
+        end
+    end
+end
+
 local function setup_autocmds(msvc, buf)
     local group =
         vim.api.nvim_create_augroup("MsvcBuffer_" .. buf, { clear = true })
@@ -367,27 +385,46 @@ local function setup_keymaps(msvc, buf)
     map("=", function()
         local ent = entity_at_cursor()
         if not ent then return end
+        -- Only collapse repositions the cursor onto the title line (ADR 012);
+        -- expansion leaves the cursor where it is.
         if ent.type == ENT.SETTINGS_FIELD then
-            if _expanded_fields[ent.field] then
-                _expanded_fields[ent.field] = nil
+            local field = ent.field
+            if _expanded_fields[field] then
+                _expanded_fields[field] = nil
+                render(msvc, buf)
+                cursor_to_title(buf, function(e)
+                    return e.type == ENT.SETTINGS_FIELD and e.field == field
+                end)
             else
-                _expanded_fields[ent.field] = true
+                _expanded_fields[field] = true
+                render(msvc, buf)
             end
-            render(msvc, buf)
         elseif ent.type == ENT.SETTINGS_OPTION then
-            _expanded_fields[ent.field] = nil
+            local field = ent.field
+            _expanded_fields[field] = nil
             render(msvc, buf)
+            cursor_to_title(buf, function(e)
+                return e.type == ENT.SETTINGS_FIELD and e.field == field
+            end)
         elseif ent.type == ENT.SOLUTION then
             local k = ent.path:lower()
             if _expanded_solutions[k] then
                 _expanded_solutions[k] = nil
+                render(msvc, buf)
+                cursor_to_title(buf, function(e)
+                    return e.type == ENT.SOLUTION and e.path:lower() == k
+                end)
             else
                 _expanded_solutions[k] = true
+                render(msvc, buf)
             end
-            render(msvc, buf)
         elseif ent.type == ENT.PROJECT and _mode == "add" and ent.solution then
-            _expanded_solutions[ent.solution:lower()] = nil
+            local k = ent.solution:lower()
+            _expanded_solutions[k] = nil
             render(msvc, buf)
+            cursor_to_title(buf, function(e)
+                return e.type == ENT.SOLUTION and e.path:lower() == k
+            end)
         end
     end)
     map("<CR>", function()

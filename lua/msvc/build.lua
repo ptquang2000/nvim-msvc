@@ -36,6 +36,11 @@ local function build_argv(ctx)
     argv[#argv + 1] = "/p:Configuration=" .. ctx.configuration
     argv[#argv + 1] = "/p:Platform=" .. ctx.platform
     if ctx.jobs and ctx.jobs > 0 then
+        -- /m:N bounds MSBuild worker NODES (project-level parallelism), not the
+        -- total process count: expect up to N+1 MSBuild.exe plus cl.exe children.
+        -- Projects with /MP (<MultiProcessorCompilation>) spawn one compiler per
+        -- logical core per node, which /m:N does not cap. We deliberately do NOT
+        -- pass /p:CL_MPCount — cl.exe parallelism stays unbounded by `jobs`.
         argv[#argv + 1] = "/m:" .. tostring(ctx.jobs)
     end
     if ctx.target and ctx.target ~= "" then

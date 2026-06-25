@@ -11,6 +11,11 @@ M.DEFAULT_SETTINGS = {
     platform = nil,
     arch = "x64",
     vs_version = "latest",
+    -- `jobs` → MSBuild `/m:N`: bounds *worker nodes* (project-level parallelism)
+    -- only, NOT total process count. Live processes can reach N+1 MSBuild.exe
+    -- (scheduler + N workers) plus cl.exe children; projects with /MP spawn one
+    -- compiler per logical core per node, which /m:N does not bound. So a count
+    -- well above `jobs` is expected, not a bug. See build.lua `build_argv`.
     jobs = 6,
 }
 
