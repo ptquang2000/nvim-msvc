@@ -151,6 +151,19 @@ function M.dirname(p)
     return s:match("^(.*)[\\/][^\\/]+$") or ""
 end
 
+--- Split a total compiler budget `B` (max concurrent cl.exe) across MSBuild's
+--- two parallelism axes: `/m:nodes` (project-level) and `/p:CL_MPCount:mpcount`
+--- (per-node /MP compiler fan-out). The square-root split hedges solution shape
+--- (many-small vs few-large projects). Guarantees `nodes * mpcount <= B`, so the
+--- product never exceeds the budget. Pure arithmetic — no host dependency.
+---@param B integer total compiler budget (caller must pass B >= 1)
+---@return { nodes: integer, mpcount: integer }
+function M.split_budget(B)
+    local nodes = math.max(1, math.ceil(math.sqrt(B)))
+    local mpcount = math.max(1, math.floor(B / nodes))
+    return { nodes = nodes, mpcount = mpcount }
+end
+
 --- Sort + dedup an array of strings, preserving first-seen order.
 function M.dedupe(list)
     local seen, out = {}, {}

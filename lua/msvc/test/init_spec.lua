@@ -33,7 +33,9 @@ describe("msvc.init — context store", function()
         assert.is_nil(Msvc.settings.platform)
         assert.are.equal("x64", Msvc.settings.arch)
         assert.are.equal("latest", Msvc.settings.vs_version)
-        assert.are.equal(6, Msvc.settings.jobs)
+        -- jobs default is host-relative: max(1, cores - 2). See ADR 013.
+        local cores = (vim.uv or vim.loop).available_parallelism()
+        assert.are.equal(math.max(1, cores - 2), Msvc.settings.jobs)
     end)
 
     it("_save_context stores a flat settings snapshot", function()

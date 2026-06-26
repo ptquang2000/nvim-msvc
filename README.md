@@ -83,7 +83,7 @@ overridable per-context from the `msvc://` buffer.
 | `platform`      | string  | nil        | e.g. `"x64"` / `"Win32"` / `"ARM64"`              |
 | `arch`          | string  | `"x64"`    | Toolchain arch for `vcvarsall.bat`                 |
 | `vs_version`    | string  | `"latest"` | `"latest"` / `"2019"` / `"2022"` / version range  |
-| `jobs`          | integer | `6`        | Parallel MSBuild jobs (`/m:<n>`)                   |
+| `jobs`          | integer | `cores-2`  | Total compiler budget (max concurrent `cl.exe`); split across `/m` and `CL_MPCount`. Default reserves 2 cores for the UI. `0` = unbounded |
 
 ## Subcommands
 
@@ -212,3 +212,24 @@ All groups are defined with `default = true` so user overrides win.
 
 `:checkhealth msvc` validates the environment: vswhere and MSBuild discovery,
 active configuration, and the `compile_commands.json` extractor.
+
+## Development
+
+Run from the repo root (requires `stylua`, `luacheck`, and `nvim` on `PATH`):
+
+```sh
+# Format Lua sources
+stylua lua tests
+
+# Lint Lua sources
+luacheck lua tests
+
+# Run the test suite (plenary-busted, headless)
+nvim --headless --noplugin -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory lua/msvc/test/ {minimal_init='tests/minimal_init.lua',sequential=true}"
+
+# Full check: format-check, then lint, then tests
+stylua --check lua tests && luacheck lua tests && \
+  nvim --headless --noplugin -u tests/minimal_init.lua \
+  -c "PlenaryBustedDirectory lua/msvc/test/ {minimal_init='tests/minimal_init.lua',sequential=true}"
+```

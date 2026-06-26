@@ -32,7 +32,10 @@ describe("msvc.config", function()
         assert.is_nil(d.platform)
         assert.are.equal("x64", d.arch)
         assert.are.equal("latest", d.vs_version)
-        assert.are.equal(6, d.jobs)
+        -- jobs is a host-relative compiler budget: max(1, cores - 2). Assert the
+        -- formula rather than a literal so it holds on any machine. See ADR 013.
+        local cores = (vim.uv or vim.loop).available_parallelism()
+        assert.are.equal(math.max(1, cores - 2), d.jobs)
     end)
 
     it("merge_config default_settings key overrides jobs default", function()
@@ -43,7 +46,7 @@ describe("msvc.config", function()
 
     it("merge_config without default_settings uses DEFAULT_SETTINGS.jobs", function()
         local cfg = Config.merge_config({})
-        assert.are.equal(6, cfg.default_settings.jobs)
+        assert.are.equal(Config.DEFAULT_SETTINGS.jobs, cfg.default_settings.jobs)
     end)
 
     it("get_default_config has settings layer with compile_commands", function()

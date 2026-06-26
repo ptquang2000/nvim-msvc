@@ -22,11 +22,13 @@ describe("msvc.build", function()
         assert.are.equal("/nr:false", argv[3])
         assert.are.equal("/p:Configuration=Release", argv[4])
         assert.are.equal("/p:Platform=Win32", argv[5])
-        assert.are.equal("/m:6", argv[6])
-        assert.are.equal("/t:Build", argv[7])
+        -- jobs=6 is a total budget; split_budget(6) → {nodes=3, mpcount=2}.
+        assert.are.equal("/m:3", argv[6])
+        assert.are.equal("/p:CL_MPCount:2", argv[7])
+        assert.are.equal("/t:Build", argv[8])
     end)
 
-    it("omits /m when jobs is nil and /t when target is nil", function()
+    it("omits /m, CL_MPCount, /t when jobs and target are nil", function()
         local argv = Build._build_argv({
             msbuild = "M",
             target_path = "T",
@@ -35,6 +37,7 @@ describe("msvc.build", function()
         })
         local s = table.concat(argv, " ")
         assert.is_falsy(s:find("/m:"))
+        assert.is_falsy(s:find("CL_MPCount"))
         assert.is_falsy(s:find("/t:"))
         assert.is_truthy(s:find("/nr:false"))
     end)

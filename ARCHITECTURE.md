@@ -50,7 +50,7 @@ indirection. There are no named profiles.
 | `platform`      | Parsed from `.sln` / `.vcxproj`          | Yes |
 | `arch`          | Fixed list (x86/x64/arm/arm64)           | Yes |
 | `vs_version`    | vswhere installations                    | Yes |
-| `jobs`          | Free number; default 6 (or `setup()` override) | Yes |
+| `jobs`          | Total compiler budget; split across `/m` + `CL_MPCount`. Default `cores-2` (or `setup()` override) | Yes |
 | `winsdk`        | Auto from `<WindowsTargetPlatformVersion>` in `.vcxproj` | No (hidden) |
 | `vcvars_ver`    | Auto from `<PlatformToolset>` in `.vcxproj` | No (hidden) |
 

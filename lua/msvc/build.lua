@@ -36,12 +36,15 @@ local function build_argv(ctx)
     argv[#argv + 1] = "/p:Configuration=" .. ctx.configuration
     argv[#argv + 1] = "/p:Platform=" .. ctx.platform
     if ctx.jobs and ctx.jobs > 0 then
-        -- /m:N bounds MSBuild worker NODES (project-level parallelism), not the
-        -- total process count: expect up to N+1 MSBuild.exe plus cl.exe children.
-        -- Projects with /MP (<MultiProcessorCompilation>) spawn one compiler per
-        -- logical core per node, which /m:N does not cap. We deliberately do NOT
-        -- pass /p:CL_MPCount — cl.exe parallelism stays unbounded by `jobs`.
-        argv[#argv + 1] = "/m:" .. tostring(ctx.jobs)
+        -- `jobs` is a TOTAL compiler budget B (max concurrent cl.exe). Split it
+        -- across MSBuild's two parallelism axes: /m:nodes (project-level) and
+        -- /p:CL_MPCount:mpcount (per-node /MP fan-out). split_budget guarantees
+        -- nodes * mpcount <= B, so the build never oversubscribes the budget.
+        -- CL_MPCount only affects /MP (<MultiProcessorCompilation>) projects;
+        -- for non-/MP projects only the /m factor applies.
+        local split = Util.split_budget(ctx.jobs)
+        argv[#argv + 1] = "/m:" .. tostring(split.nodes)
+        argv[#argv + 1] = "/p:CL_MPCount:" .. tostring(split.mpcount)
     end
     if ctx.target and ctx.target ~= "" then
         argv[#argv + 1] = "/t:" .. ctx.target

@@ -11,12 +11,13 @@ M.DEFAULT_SETTINGS = {
     platform = nil,
     arch = "x64",
     vs_version = "latest",
-    -- `jobs` → MSBuild `/m:N`: bounds *worker nodes* (project-level parallelism)
-    -- only, NOT total process count. Live processes can reach N+1 MSBuild.exe
-    -- (scheduler + N workers) plus cl.exe children; projects with /MP spawn one
-    -- compiler per logical core per node, which /m:N does not bound. So a count
-    -- well above `jobs` is expected, not a bug. See build.lua `build_argv`.
-    jobs = 6,
+    -- `jobs` is a TOTAL compiler budget: the max number of cl.exe the build may
+    -- run at once. build_argv splits it across MSBuild's /m:nodes (project-level)
+    -- and /p:CL_MPCount:mpcount (per-node /MP fan-out) axes via Util.split_budget,
+    -- which guarantees nodes * mpcount <= jobs. The default reserves two logical
+    -- cores for the UI so builds stay responsive out-of-the-box. setup() override
+    -- still wins. See build.lua `build_argv` and ADR 013.
+    jobs = math.max(1, (vim.uv or vim.loop).available_parallelism() - 2),
 }
 
 local VALID_ARCH = { x86 = true, x64 = true, arm = true, arm64 = true }

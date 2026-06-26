@@ -70,6 +70,32 @@ describe("msvc.util", function()
         )
     end)
 
+    it("split_budget splits a budget across /m and CL_MPCount axes", function()
+        local cases = {
+            { B = 2, nodes = 2, mpcount = 1 },
+            { B = 6, nodes = 3, mpcount = 2 },
+            { B = 14, nodes = 4, mpcount = 3 },
+            { B = 30, nodes = 6, mpcount = 5 },
+            { B = 1, nodes = 1, mpcount = 1 },
+        }
+        for _, c in ipairs(cases) do
+            local s = Util.split_budget(c.B)
+            assert.are.equal(c.nodes, s.nodes, "nodes for B=" .. c.B)
+            assert.are.equal(c.mpcount, s.mpcount, "mpcount for B=" .. c.B)
+            -- invariant: never oversubscribe the budget.
+            assert.is_true(
+                s.nodes * s.mpcount <= c.B,
+                "nodes*mpcount <= B for B=" .. c.B
+            )
+        end
+    end)
+
+    it("split_budget clamps both axes to at least 1 at B=1", function()
+        local s = Util.split_budget(1)
+        assert.is_true(s.nodes >= 1)
+        assert.is_true(s.mpcount >= 1)
+    end)
+
     it("get_mtime returns 0 for nil path", function()
         assert.are.equal(0, Util.get_mtime(nil))
     end)
